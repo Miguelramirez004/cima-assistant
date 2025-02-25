@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from formulacion import FormulationAgent, CIMAExpertAgent
 from config import Config
 
-# Load environment variables
+# Load environment variables (for local development)
 load_dotenv()
 
 # Configure page
@@ -46,10 +46,18 @@ def run_async(async_func, *args, **kwargs):
 # Global OpenAI client for reuse
 @st.cache_resource
 def get_openai_client():
-    api_key = os.getenv("OPENAI_API_KEY") or Config.OPENAI_API_KEY
+    """Get OpenAI client with proper API key handling"""
+    # Try to get API key from Streamlit secrets first (for cloud deployment)
+    try:
+        api_key = st.secrets["OPENAI_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        # Fall back to environment variables or Config
+        api_key = os.getenv("OPENAI_API_KEY") or Config.OPENAI_API_KEY
+    
     if not api_key:
-        st.error("No se ha encontrado la API key de OpenAI. Por favor configure el archivo .env")
+        st.error("No se ha encontrado la API key de OpenAI. Verifique los secretos de Streamlit, variables de entorno o el archivo config.py")
         return None
+        
     return AsyncOpenAI(api_key=api_key)
 
 # Initialize session state variables if not already present
@@ -64,6 +72,13 @@ if 'messages' not in st.session_state:
 if 'current_query' not in st.session_state:
     st.session_state.current_query = ""
 
+# Check OpenAI API key at startup
+openai_client = get_openai_client()
+if openai_client:
+    st.success("✅ Conexión a OpenAI configurada correctamente")
+else:
+    st.error("❌ Error: No se pudo establecer conexión con OpenAI. Por favor configure la API key en los secretos de Streamlit.")
+    
 # Title
 st.title("🧪 CIMA Assistant")
 st.markdown("### *Sistema inteligente de consulta para formulación magistral y CIMA*")
