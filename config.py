@@ -5,7 +5,7 @@ load_dotenv()
 
 class Config:
     # OpenAI Model Configuration
-    CHAT_MODEL = "gpt-3.5-turbo"  # Compatible with older OpenAI SDK
+    CHAT_MODEL = "gpt-3.5-turbo"  # Compatible with OpenAI SDK 0.27.8
     EMBEDDING_MODEL = "text-embedding-ada-002"
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     
@@ -18,7 +18,7 @@ class Config:
     CACHE_TIMEOUT = 3600  # Cache timeout in seconds (1 hour)
     
     # RAG Settings
-    CONTEXT_SIZE = 8000  # Maximum context size in tokens
+    CONTEXT_SIZE = 4000  # Maximum context size in tokens - reduced for compatibility
     
     # Formulation Settings
     FORMULATION_TYPES = {
