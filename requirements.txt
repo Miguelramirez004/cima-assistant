@@ -4,3 +4,8 @@ aiohttp==3.8.5
 python-dotenv==1.0.0
 httpx==0.24.1
 nest-asyncio==1.5.8
+tiktoken==0.5.1
+anyio==3.7.1
+backoff==2.2.1
+concurrent-log-handler==0.9.24
+tenacity==8.2.3
