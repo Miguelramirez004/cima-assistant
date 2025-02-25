@@ -9,12 +9,8 @@ import os
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
 def init_agents():
-    # Initialize the OpenAI client without proxy settings
-    client = AsyncOpenAI(
-        api_key=Config.OPENAI_API_KEY,
-        # Remove any default proxy handling that might be causing issues
-        http_client=None  
-    )
+    # Simple initialization of OpenAI client with just the API key
+    client = AsyncOpenAI(api_key=Config.OPENAI_API_KEY)
     return FormulationAgent(client), CIMAExpertAgent(client)
 
 # Custom CSS with just the essential styling
