@@ -9,10 +9,10 @@ import os
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
 def init_agents():
-    # Initialize OpenAI client
+    # Initialize OpenAI API key
     openai.api_key = Config.OPENAI_API_KEY
     
-    # Use the older API pattern for OpenAI v0.28.1
+    # For OpenAI v0.27.8, we just pass the openai module
     return FormulationAgent(openai), CIMAExpertAgent(openai)
 
 # Custom CSS with just the essential styling
