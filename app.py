@@ -10,6 +10,7 @@ from openai_client import create_async_openai_client
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
 def init_agents():
+    """Initialize OpenAI client and agents"""
     # Initialize OpenAI client for v1.3.0
     openai_client = create_async_openai_client(api_key=Config.OPENAI_API_KEY)
     
@@ -45,25 +46,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state variables
+# Initialize session state variables more efficiently
 if 'agents' not in st.session_state:
     st.session_state.agents = init_agents()
     st.session_state.chat_history = []
     st.session_state.formulation_history = []
     st.session_state.search_history = set()
-
-# For example handling
-if 'current_query' not in st.session_state:
+    st.session_state.messages = []
     st.session_state.current_query = ""
 
-# For chat functionality
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
+# Title and description
 st.title("🧪 CIMA Assistant")
 st.markdown("### *Sistema inteligente de consulta para formulación magistral y CIMA*")
 
-# Sidebar
+# Sidebar 
 with st.sidebar:
     st.header("Información")
     st.markdown("""
@@ -82,6 +78,7 @@ with st.sidebar:
         st.markdown("No hay búsquedas recientes")
     
     if st.button("Limpiar historial"):
+        # Reset state
         st.session_state.search_history = set()
         st.session_state.formulation_history = []
         st.session_state.agents[1].clear_history()
@@ -136,9 +133,25 @@ with tab1:
             # Add to search history
             st.session_state.search_history.add(query_fm)
             
+            # Progress indicators for better user experience
+            progress_placeholder = st.empty()
+            status_text = st.empty()
+            
             with st.spinner("Procesando su consulta..."):
                 try:
+                    # Show progress updates
+                    with progress_placeholder.container():
+                        progress_bar = st.progress(0)
+                    
+                    status_text.text("Buscando información en CIMA...")
+                    progress_bar.progress(25)
+                    
+                    # Get response
                     response = asyncio.run(st.session_state.agents[0].answer_question(query_fm))
+                    
+                    # Update progress
+                    status_text.text("Generando formulación...")
+                    progress_bar.progress(75)
                     
                     # Store in formulation history
                     st.session_state.formulation_history.append({
@@ -147,6 +160,11 @@ with tab1:
                         "context": response["context"],
                         "references": response["references"]
                     })
+                    
+                    # Complete progress
+                    progress_bar.progress(100)
+                    status_text.empty()
+                    progress_placeholder.empty()
                     
                     st.subheader("Formulación:")
                     st.markdown(response["answer"])
@@ -192,18 +210,18 @@ with tab2:
     </div>
     """, unsafe_allow_html=True)
     
-    # Simple container for the chat
+    # Chat container
     chat_container = st.container()
     
-    # Display chat messages using the built-in st.chat_message
+    # Display chat messages
     with chat_container:
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
     
-    # Chat input at the bottom
+    # Chat input
     if prompt := st.chat_input("Escriba su consulta sobre medicamentos..."):
-        # Add query to search history
+        # Add to search history
         st.session_state.search_history.add(prompt)
         
         # Display user message
@@ -213,16 +231,41 @@ with tab2:
 
         # Process and display assistant response
         with st.chat_message("assistant"):
+            # Progress indicators
+            progress_placeholder = st.empty()
+            status_text = st.empty()
+            
             with st.spinner("Buscando información en CIMA..."):
                 try:
+                    # Show progress updates
+                    with progress_placeholder.container():
+                        progress_bar = st.progress(0)
+                    
+                    status_text.text("Consultando CIMA...")
+                    progress_bar.progress(30)
+                    
+                    # Process response
                     response = asyncio.run(st.session_state.agents[1].chat(prompt))
+                    
+                    # Update progress
+                    status_text.text("Generando respuesta...")
+                    progress_bar.progress(80)
+                    
+                    # Clear progress indicators
+                    progress_bar.progress(100)
+                    status_text.empty()
+                    progress_placeholder.empty()
+                    
+                    # Show response
                     st.markdown(response["answer"])
+                    
+                    # Show sources in expander
                     with st.expander("Ver fuentes"):
                         st.markdown(response["context"])
                 except Exception as e:
                     st.markdown(f"Error: {str(e)}")
                     
-        # Add assistant's response to the session state
+        # Add to session state
         st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
     
     # Button for new conversation
