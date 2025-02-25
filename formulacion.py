@@ -8,10 +8,21 @@ import json
 import asyncio
 from datetime import datetime
 import logging
+import tiktoken
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
+    """Count the number of tokens in a text string for a specific model."""
+    try:
+        enc = tiktoken.encoding_for_model(model)
+        return len(enc.encode(text))
+    except Exception as e:
+        # If there's an error, estimate with a simple approximation
+        # (roughly 4 characters per token for most languages)
+        return len(text) // 4
 
 @dataclass
 class FormulationAgent:
@@ -19,6 +30,7 @@ class FormulationAgent:
     base_url: str = Config.CIMA_BASE_URL
     reference_cache: Dict[str, List[Dict]] = field(default_factory=dict)
     session: aiohttp.ClientSession = None
+    max_tokens: int = 12000  # Conservative limit to leave room for response
 
     system_prompt = """Farmacéutico especialista en formulación magistral con amplio conocimiento en CIMA. 
 Genera formulaciones magistrales detalladas y precisas basadas en la información proporcionada por CIMA.
@@ -141,48 +153,35 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
     async def get_session(self):
         """Get or create an aiohttp session with keepalive"""
         if self.session is None or self.session.closed:
+            # Using TCPConnector with keepalive and increased limits
             connector = aiohttp.TCPConnector(
                 ssl=False, 
-                limit=30,
-                keepalive_timeout=120
+                limit=30,  # Increased connection limit
+                keepalive_timeout=120  # Longer keepalive
             )
-            timeout = aiohttp.ClientTimeout(total=60)
+            timeout = aiohttp.ClientTimeout(total=60)  # Increased timeout to 60 seconds
             self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
         return self.session
     
     async def get_medication_details(self, nregistro: str) -> Dict:
-        """Optimized method to fetch all medication details concurrently"""
+        """Optimized method to fetch medication details focusing on essential data"""
         logger.info(f"Fetching medication details for nregistro: {nregistro}")
         session = await self.get_session()
-        sections_of_interest = {
-            "1": "nombre",
+        
+        # Prioritize the most important sections for formulación magistral
+        essential_sections = {
             "2": "composicion",
-            "3": "forma_farmaceutica",
             "4.1": "indicaciones",
             "4.2": "posologia_procedimiento",
             "4.3": "contraindicaciones",
             "4.4": "advertencias",
-            "4.5": "interacciones",
-            "4.6": "embarazo_lactancia",
-            "4.8": "efectos_adversos",
-            "5.1": "propiedades_farmacodinamicas",
-            "5.2": "propiedades_farmacocineticas",
-            "5.3": "datos_preclinicos",
             "6.1": "excipientes",
-            "6.2": "incompatibilidades",
-            "6.3": "conservacion",
-            "6.4": "especificaciones",
-            "6.5": "envase",
-            "6.6": "eliminacion",
-            "7": "titular_autorizacion",
-            "8": "numero_autorizacion",
-            "9": "fecha_autorizacion",
-            "10": "fecha_revision"
+            "6.3": "conservacion"
         }
         
         details = {}
         
-        # Define async tasks for concurrent execution
+        # Define async tasks for concurrent execution - focusing on basic info first
         async def get_basic_info():
             detail_url = f"{self.base_url}/medicamento"
             try:
@@ -195,152 +194,35 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                 logger.error(f"Error retrieving basic details: {str(e)}")
             return {"error": "Unable to retrieve basic details"}
         
-        async def get_section(section, key):
-            tech_url = f"{self.base_url}/docSegmentado/contenido/1"
-            params = {"nregistro": nregistro, "seccion": section}
-            try:
-                async with session.get(tech_url, params=params) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if isinstance(result, dict):
-                            return (key, result)
-            except Exception as e:
-                logger.error(f"Error retrieving section {section}: {str(e)}")
-            return (key, {"contenido": f"No disponible"})
-        
-        async def get_prospecto_section(section=None):
-            """Get prospecto content (HTML format)"""
-            url = f"{self.base_url}/docSegmentado/contenido/2"
-            params = {"nregistro": nregistro}
-            if section:
-                params["seccion"] = section
-            
-            headers = {"Accept": "text/html"}
-            try:
-                async with session.get(url, params=params, headers=headers) as response:
-                    if response.status == 200:
-                        content = await response.text()
-                        return {"prospecto_html": content}
-            except Exception as e:
-                logger.error(f"Error retrieving prospecto HTML: {str(e)}")
-            
-            return {"error": "Unable to retrieve prospecto HTML"}
-            
-        async def get_prospecto_structure():
-            """Get prospecto structure (JSON format)"""
-            url = f"{self.base_url}/docSegmentado/secciones/2"
-            params = {"nregistro": nregistro}
-            
-            try:
-                async with session.get(url, params=params) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        return {"prospecto_structure": result}
-            except Exception as e:
-                logger.error(f"Error retrieving prospecto structure: {str(e)}")
-            
-            return {"error": "Unable to retrieve prospecto structure"}
-            
-        async def get_prospecto_full():
-            """Get the full prospecto from the HTML endpoint"""
-            url = f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/Prospecto.html"
-            
-            try:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        content = await response.text()
-                        return {"prospecto_full": content}
-            except Exception as e:
-                logger.error(f"Error retrieving full prospecto: {str(e)}")
-            
-            return {"error": "Unable to retrieve full prospecto"}
-        
-        async def get_images():
-            image_url = f"{self.base_url}/medicamento/fotos"
-            try:
-                async with session.get(image_url, params={"nregistro": nregistro}) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if isinstance(result, dict):
-                            return result
-                        elif isinstance(result, list):
-                            return {"fotos": result}
-            except Exception as e:
-                logger.error(f"Error retrieving images: {str(e)}")
-            return {"error": "Unable to retrieve images"}
-            
-        async def get_laboratorio():
-            url = f"{self.base_url}/medicamento/laboratorios"
-            try:
-                async with session.get(url, params={"nregistro": nregistro}) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if isinstance(result, dict) or isinstance(result, list):
-                            return {"laboratorios": result}
-            except Exception as e:
-                logger.error(f"Error retrieving labs: {str(e)}")
-            return {"error": "Unable to retrieve laboratory information"}
-            
-        async def get_presentaciones():
-            url = f"{self.base_url}/presentaciones"
-            try:
-                async with session.get(url, params={"nregistro": nregistro}) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if isinstance(result, dict) and "resultados" in result:
-                            return {"presentaciones": result["resultados"]}
-            except Exception as e:
-                logger.error(f"Error retrieving presentations: {str(e)}")
-            return {"error": "Unable to retrieve presentations"}
-        
-        # Execute basic info request first
+        # Execute basic info request first - we need this for sure
         basic_info = await get_basic_info()
         details["basic"] = basic_info
         
-        # Only fetch sections if we got basic info successfully
+        # Only fetch sections if we got basic info successfully and it's not an error
         if "error" not in basic_info:
-            # Limit concurrent section requests to avoid overwhelming the API while still getting all data
-            semaphore = asyncio.Semaphore(10)
+            # Limit concurrent section requests to avoid overwhelming the API
+            semaphore = asyncio.Semaphore(5)  # Reduced to 5 concurrent requests
             
-            async def limited_section_fetch(section, key):
-                async with semaphore:
-                    return await get_section(section, key)
+            async def get_section(section, key):
+                tech_url = f"{self.base_url}/docSegmentado/contenido/1"
+                params = {"nregistro": nregistro, "seccion": section}
+                try:
+                    async with semaphore, session.get(tech_url, params=params) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            if isinstance(result, dict):
+                                return (key, result)
+                except Exception as e:
+                    logger.error(f"Error retrieving section {section}: {str(e)}")
+                return (key, {"contenido": f"No disponible"})
             
-            # Create tasks for all data we need
-            section_tasks = [limited_section_fetch(section, key) for section, key in sections_of_interest.items()]
+            # Create tasks only for essential sections to reduce data volume
+            section_tasks = [get_section(section, key) for section, key in essential_sections.items()]
             
-            # Add tasks for prospecto information
-            prospecto_tasks = [
-                get_prospecto_section(),
-                get_prospecto_structure(),
-                get_prospecto_full()
-            ]
-            
-            # Add tasks for additional information
-            additional_tasks = [
-                get_images(),
-                get_laboratorio(),
-                get_presentaciones()
-            ]
-            
-            # Execute all tasks concurrently
+            # Execute section tasks concurrently and process results
             section_results = await asyncio.gather(*section_tasks)
-            prospecto_results = await asyncio.gather(*prospecto_tasks)
-            additional_results = await asyncio.gather(*additional_tasks)
-            
-            # Process section results
             for key, value in section_results:
                 details[key] = value
-            
-            # Process prospecto results
-            details["prospecto_content"] = prospecto_results[0]
-            details["prospecto_structure"] = prospecto_results[1]
-            details["prospecto_full"] = prospecto_results[2]
-            
-            # Process additional results
-            details["imagenes"] = additional_results[0]
-            details["laboratorios"] = additional_results[1]
-            details["presentaciones"] = additional_results[2]
         
         logger.info(f"Completed fetching details for nregistro: {nregistro}")
         return details
@@ -406,7 +288,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     def format_medication_info(self, index: int, med: Dict, details: Dict) -> str:
         """
-        Complete medication information formatting with full context
+        Optimized medication information formatting focused on essential data
         """
         # Basic medication info - with safe access
         basic_info = details.get('basic', {})
@@ -429,30 +311,18 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         lab_titular = basic_info.get('labtitular', 'No disponible')
         
         # Format sections with proper handling of missing data
-        def get_section_content(section_key):
+        def get_section_content(section_key, max_length=400):
+            """Get section content with length limit"""
             section_data = details.get(section_key, {})
             if not isinstance(section_data, dict):
                 return "No disponible"
-            return section_data.get('contenido', 'No disponible')
+            content = section_data.get('contenido', 'No disponible')
+            # Limit length to reduce token usage
+            if len(content) > max_length:
+                return content[:max_length] + "..."
+            return content
         
-        # Check if we have prospecto information
-        has_prospecto = False
-        prospecto_content = ""
-        
-        # Try to get prospecto content
-        prospecto_data = details.get('prospecto_content', {})
-        if isinstance(prospecto_data, dict) and "prospecto_html" in prospecto_data:
-            has_prospecto = True
-            prospecto_content = prospecto_data["prospecto_html"]
-        
-        # If no direct content, try full prospecto
-        if not has_prospecto:
-            prospecto_full = details.get('prospecto_full', {})
-            if isinstance(prospecto_full, dict) and "prospecto_full" in prospecto_full:
-                has_prospecto = True
-                prospecto_content = prospecto_full["prospecto_full"]
-        
-        # Include all available sections for comprehensive context
+        # Create a concise reference focused on formulary-relevant information
         reference = f"""
 [Referencia {index}: {med_name} (Nº Registro: {nregistro})]
 
@@ -460,17 +330,13 @@ INFORMACIÓN BÁSICA:
 - Nombre: {med_name}
 - Número de registro: {nregistro}
 - Laboratorio titular: {lab_titular}
-- Fecha de autorización: {fecha_autorizacion}
 - Principios activos: {med.get('pactivos', 'No disponible')}
-
-NOMBRE:
-{get_section_content('nombre')}
 
 COMPOSICIÓN:
 {get_section_content('composicion')}
 
-FORMA FARMACÉUTICA:
-{get_section_content('forma_farmaceutica')}
+EXCIPIENTES:
+{get_section_content('excipientes')}
 
 INDICACIONES TERAPÉUTICAS:
 {get_section_content('indicaciones')}
@@ -478,80 +344,20 @@ INDICACIONES TERAPÉUTICAS:
 POSOLOGÍA Y ADMINISTRACIÓN:
 {get_section_content('posologia_procedimiento')}
 
-CONTRAINDICACIONES:
-{get_section_content('contraindicaciones')}
-
 ADVERTENCIAS Y PRECAUCIONES:
 {get_section_content('advertencias')}
-
-INTERACCIONES:
-{get_section_content('interacciones')}
-
-EMBARAZO Y LACTANCIA:
-{get_section_content('embarazo_lactancia')}
-
-EFECTOS ADVERSOS:
-{get_section_content('efectos_adversos')}
-
-PROPIEDADES FARMACODINÁMICAS:
-{get_section_content('propiedades_farmacodinamicas')}
-
-PROPIEDADES FARMACOCINÉTICAS:
-{get_section_content('propiedades_farmacocineticas')}
-
-DATOS PRECLÍNICOS:
-{get_section_content('datos_preclinicos')}
-
-EXCIPIENTES:
-{get_section_content('excipientes')}
-
-INCOMPATIBILIDADES:
-{get_section_content('incompatibilidades')}
 
 CONSERVACIÓN:
 {get_section_content('conservacion')}
 
-ESPECIFICACIONES:
-{get_section_content('especificaciones')}
-
-ENVASE:
-{get_section_content('envase')}
-
-ELIMINACIÓN:
-{get_section_content('eliminacion')}
-
-TITULAR DE AUTORIZACIÓN:
-{get_section_content('titular_autorizacion')}
-
-NÚMERO DE AUTORIZACIÓN:
-{get_section_content('numero_autorizacion')}
-
-FECHA DE AUTORIZACIÓN:
-{get_section_content('fecha_autorizacion')}
-
-FECHA DE REVISIÓN:
-{get_section_content('fecha_revision')}
-"""
-
-        # Add prospecto information if available
-        if has_prospecto:
-            reference += f"""
-PROSPECTO:
-{prospecto_content}
-"""
-
-        reference += f"""
 URL FICHA TÉCNICA:
 https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
-
-URL PROSPECTO:
-https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
 """
         return reference
 
-    async def get_relevant_context(self, query: str, n_results: int = 5) -> str:
+    async def get_relevant_context(self, query: str, n_results: int = 3) -> str:
         """
-        Enhanced context retrieval that gets all possible information
+        Enhanced context retrieval that prioritizes most relevant information
         """
         logger.info(f"Getting context for query: '{query}'")
         cache_key = f"{query}_{n_results}"
@@ -584,13 +390,21 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
             cached_results = self.reference_cache[cache_key]
             context = [self.format_medication_info(i, med, details) 
                       for i, (med, details) in enumerate(cached_results, 1)]
-            return "\n".join(context)
+            joined_context = "\n".join(context)
+            
+            # Check if we need to truncate to stay within token limits
+            token_count = count_tokens(joined_context + self.system_prompt, Config.CHAT_MODEL)
+            if token_count > self.max_tokens:
+                logger.warning(f"Context too large ({token_count} tokens), truncating...")
+                return self.truncate_context(joined_context)
+            
+            return joined_context
 
         # Get/create aiohttp session
         session = await self.get_session()
         search_url = f"{self.base_url}/medicamentos"
         
-        # Define comprehensive search strategies that get EVERYTHING relevant
+        # Define search strategies prioritizing exact matches
         search_strategies = [
             # Try exact match first
             {"params": {"nombre": query}, "priority": 1},
@@ -600,8 +414,8 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
             {"params": {"formaFarmaceutica": formulation_type}, "priority": 3},
         ]
         
-        # Add any additional terms that might be relevant
-        terms = self._extract_search_terms(query)
+        # Add any additional terms that might be relevant (limit to 2 for performance)
+        terms = self._extract_search_terms(query)[:2]
         for term in terms:
             if term != query and term != active_principle:
                 search_strategies.append({
@@ -623,7 +437,7 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                 logger.error(f"Error in search with params {params}: {str(e)}")
             return {"results": [], "priority": priority}
         
-        # Execute all searches concurrently
+        # Execute searches concurrently
         search_tasks = [search_medications(strategy["params"], strategy["priority"]) 
                          for strategy in search_strategies]
         
@@ -644,53 +458,15 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                                 seen_nregistros.add(nregistro)
                                 all_results.append(med)
         
-        # If we're looking for prospecto and have no results yet, try a specialized search
-        if is_prospecto and not all_results and active_principle:
-            try:
-                # Try with a more specialized search
-                specialized_params = {"practiv1": active_principle}
-                async with session.get(search_url, params=specialized_params) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if isinstance(data, dict) and "resultados" in data:
-                            result_list = data.get("resultados", [])
-                            for med in result_list:
-                                if isinstance(med, dict) and med.get("nregistro"):
-                                    nregistro = med.get("nregistro")
-                                    if nregistro not in seen_nregistros:
-                                        seen_nregistros.add(nregistro)
-                                        all_results.append(med)
-            except Exception as e:
-                logger.error(f"Error in specialized prospecto search: {str(e)}")
-                
-            # If still no results, try ATC search
-            if not all_results:
-                try:
-                    # Search in ATC codes
-                    specialized_params = {"atc": active_principle}
-                    async with session.get(search_url, params=specialized_params) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if isinstance(data, dict) and "resultados" in data:
-                                result_list = data.get("resultados", [])
-                                for med in result_list:
-                                    if isinstance(med, dict) and med.get("nregistro"):
-                                        nregistro = med.get("nregistro")
-                                        if nregistro not in seen_nregistros:
-                                            seen_nregistros.add(nregistro)
-                                            all_results.append(med)
-                except Exception as e:
-                    logger.error(f"Error in ATC prospecto search: {str(e)}")
-        
-        # Limit results to requested number
+        # Limit results for better performance (use original n_results parameter)
         results = all_results[:n_results]
         cached_results = []
 
         if results:
             logger.info(f"Found {len(results)} relevant medications, fetching details")
             
-            # Fetch details for all medications concurrently with higher concurrency
-            semaphore = asyncio.Semaphore(5)  # Allow 5 concurrent detail fetches
+            # Fetch details for all medications concurrently
+            semaphore = asyncio.Semaphore(3)  # Lower to 3 concurrent detail fetches
             
             async def fetch_med_details(med):
                 async with semaphore:
@@ -713,9 +489,78 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
             context = [self.format_medication_info(i, med, details) 
                       for i, (med, details) in enumerate(cached_results, 1)]
             
-            return "\n".join(context)
+            joined_context = "\n".join(context)
+            
+            # Check if we need to truncate to stay within token limits
+            token_count = count_tokens(joined_context + self.system_prompt, Config.CHAT_MODEL)
+            if token_count > self.max_tokens:
+                logger.warning(f"Context too large ({token_count} tokens), truncating...")
+                return self.truncate_context(joined_context)
+            
+            return joined_context
         
         return "No se encontraron resultados relevantes."
+    
+    def truncate_context(self, context: str) -> str:
+        """Truncate context to fit within token limits"""
+        system_tokens = count_tokens(self.system_prompt, Config.CHAT_MODEL)
+        max_context_tokens = self.max_tokens - system_tokens - 500  # Leave 500 tokens buffer
+        
+        # First try: reduce each reference section separately
+        references = context.split("[Referencia ")
+        
+        # Keep the first reference (header)
+        if not references:
+            return "No se encontraron referencias relevantes."
+        
+        # Process each reference to make it more concise
+        processed_refs = []
+        current_tokens = 0
+        
+        # Start with the header if it exists
+        header = references[0]
+        processed_refs.append(header)
+        current_tokens += count_tokens(header, Config.CHAT_MODEL)
+        
+        # Process each reference section
+        for i, ref in enumerate(references[1:], 1):
+            # Restore the reference prefix
+            ref = "[Referencia " + ref
+            
+            # Check if adding this reference would exceed the token limit
+            ref_tokens = count_tokens(ref, Config.CHAT_MODEL)
+            
+            if current_tokens + ref_tokens <= max_context_tokens:
+                # If it fits, add the whole reference
+                processed_refs.append(ref)
+                current_tokens += ref_tokens
+            else:
+                # We need to truncate this reference
+                # Keep only the essential parts (basic info, composition, indications)
+                lines = ref.split('\n')
+                essential_ref = []
+                in_essential_section = False
+                
+                for line in lines:
+                    if "INFORMACIÓN BÁSICA:" in line or "COMPOSICIÓN:" in line or "EXCIPIENTES:" in line:
+                        in_essential_section = True
+                    elif "ADVERTENCIAS" in line or "CONSERVACIÓN" in line:
+                        in_essential_section = False
+                    
+                    if in_essential_section or "URL FICHA TÉCNICA:" in line or "[Referencia" in line:
+                        essential_ref.append(line)
+                
+                truncated_ref = '\n'.join(essential_ref)
+                truncated_tokens = count_tokens(truncated_ref, Config.CHAT_MODEL)
+                
+                if current_tokens + truncated_tokens <= max_context_tokens:
+                    processed_refs.append(truncated_ref)
+                    current_tokens += truncated_tokens
+                else:
+                    # Can't even fit essential parts, we'll stop here
+                    break
+        
+        return '\n'.join(processed_refs)
 
     def _extract_search_terms(self, query: str) -> List[str]:
         """Extract potential search terms from the query"""
@@ -742,10 +587,10 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
             if len(word) > 4 and word.lower() not in common_words and word not in potential_terms:
                 potential_terms.append(word)
         
-        # Add bi-grams (pairs of words)
-        for i in range(len(words) - 1):
-            if len(words[i]) > 3 and len(words[i+1]) > 3:
-                bigram = f"{words[i]} {words[i+1]}"
+        # Add bi-grams (pairs of words) - limit to first 2 words
+        if len(words) > 1:
+            if len(words[0]) > 3 and len(words[1]) > 3:
+                bigram = f"{words[0]} {words[1]}"
                 if bigram not in potential_terms:
                     potential_terms.append(bigram)
         
@@ -781,6 +626,20 @@ CONSULTA ORIGINAL:
 
 Genera una respuesta completa y exhaustiva utilizando toda la información disponible en el contexto. Cita las fuentes CIMA usando el formato [Ref X: Nombre del medicamento (Nº Registro)].
 """
+
+        # Check if the prompt exceeds token limit
+        token_count = count_tokens(prompt + system_prompt, Config.CHAT_MODEL)
+        if token_count > self.max_tokens:
+            logger.warning(f"Prompt too large ({token_count} tokens), truncating context...")
+            # Truncate context to fit within limits
+            max_context_tokens = self.max_tokens - count_tokens(system_prompt + prompt.replace("{context}", ""), Config.CHAT_MODEL)
+            context_tokens = count_tokens(context, Config.CHAT_MODEL)
+            
+            if context_tokens > max_context_tokens:
+                # Truncate context to fit within limits
+                context = self.truncate_context(context)
+                # Rebuild prompt with truncated context
+                prompt = prompt.replace("{context}", context)
 
         logger.info("Generating response with OpenAI")
         response = await self.openai_client.chat.completions.create(
@@ -826,6 +685,7 @@ class CIMAExpertAgent:
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
     base_url: str = Config.CIMA_BASE_URL
     session: aiohttp.ClientSession = None
+    max_tokens: int = 12000  # Conservative limit to leave room for response
     
     def __init__(self, openai_client: AsyncOpenAI):
         self.openai_client = openai_client
@@ -920,18 +780,24 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     async def get_medication_info(self, query: str) -> str:
         """
-        Full implementation for obtaining complete medication information without sacrificing coverage
+        Optimized implementation for obtaining medication information
         """
         cache_key = f"query_{query}"
         if cache_key in self.reference_cache:
-            return self.reference_cache[cache_key]
+            cached_result = self.reference_cache[cache_key]
+            # Check if cached result fits token limit
+            if count_tokens(cached_result + self.system_prompt, Config.CHAT_MODEL) <= self.max_tokens:
+                return cached_result
+            else:
+                # Truncate if needed
+                return self.truncate_context(cached_result)
 
         # Detect if this is a prospecto request
         prospecto_pattern = r'(?:redactar|generar|crear|elaborar|realizar?e?|escrib[ei]r|hac[ae]r|desarroll[ae]r)\s+(?:un|el|uns?|una?)?\s+prospecto'
         is_prospecto = bool(re.search(prospecto_pattern, query.lower()))
         logger.info(f"Query: '{query}', Is prospecto: {is_prospecto}")
         
-        # Extract all potential search terms
+        # Extract potential terms for search
         potential_terms = self._extract_search_terms(query)
         
         # Extract medication name from prospecto request
@@ -964,60 +830,40 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         processed_nregistros = set()
         all_med_info = []
         
+        # Optimize search strategy: perform direct search first, then iterate through terms
         # First try with full query if it's not a prospecto request
         if not is_prospecto:
             meds = await self._search_medications(session, query)
-            for med in meds[:5]:  # Limit to 5 results per search term
+            for med in meds[:3]:  # Limit to top 3 results for performance
                 if med.get("nregistro") not in processed_nregistros:
                     processed_nregistros.add(med.get("nregistro"))
-                    med_info = await self._get_complete_medication_details(session, med)
+                    med_info = await self._get_optimized_medication_details(session, med)
                     if med_info:
                         all_med_info.append(med_info)
         
         # For prospecto requests or if we didn't get results, focus on the extracted terms
-        if is_prospecto or len(all_med_info) < 3:
-            for term in potential_terms[:5]:  # Limit to first 5 most relevant terms
+        if is_prospecto or len(all_med_info) < 2:  # Need at least 2 results for good context
+            for term in potential_terms[:3]:  # Limit to top 3 terms for performance
                 term_meds = await self._search_medications(session, term)
-                for med in term_meds[:3]:  # Limit per term
+                for med in term_meds[:2]:  # Max 2 per term
                     if med.get("nregistro") not in processed_nregistros:
                         processed_nregistros.add(med.get("nregistro"))
-                        med_info = await self._get_complete_medication_details(session, med, fetch_prospecto=is_prospecto)
+                        med_info = await self._get_optimized_medication_details(session, med, fetch_prospecto=is_prospecto)
                         if med_info:
                             all_med_info.append(med_info)
                             
                 # Limit total results to manage context size
-                if len(all_med_info) >= 5:
+                if len(all_med_info) >= 3:
                     break
-        
-        # If prospecto request but still no results, try more searches
-        if is_prospecto and len(all_med_info) < 2:
-            # Try technical sheet search
-            ft_meds = await self._search_in_ficha_tecnica(session, query)
-            for med in ft_meds:
-                if med.get("nregistro") not in processed_nregistros:
-                    processed_nregistros.add(med.get("nregistro"))
-                    med_info = await self._get_complete_medication_details(session, med, fetch_prospecto=True)
-                    if med_info:
-                        all_med_info.append(med_info)
-                        
-            # If still no results, try a generic search for the therapeutic category
-            if len(all_med_info) < 2:
-                # Common therapeutic categories
-                categories = ["analgesico", "antibiotico", "antidepresivo", "antihistaminico", 
-                             "antihipertensivo", "corticoide", "vitamina", "hormona"]
-                             
-                for category in categories:
-                    if any(category in term.lower() for term in potential_terms):
-                        category_meds = await self._search_medications(session, category)
-                        for med in category_meds[:2]:  # Very limited
-                            if med.get("nregistro") not in processed_nregistros:
-                                processed_nregistros.add(med.get("nregistro"))
-                                med_info = await self._get_complete_medication_details(session, med, fetch_prospecto=True)
-                                if med_info:
-                                    all_med_info.append(med_info)
         
         # Combine all results
         combined_results = "\n\n".join(all_med_info)
+        
+        # Check token count and truncate if needed
+        token_count = count_tokens(combined_results + self.system_prompt, Config.CHAT_MODEL)
+        if token_count > self.max_tokens:
+            logger.warning(f"Context too large ({token_count} tokens), truncating...")
+            combined_results = self.truncate_context(combined_results)
         
         # Store in cache
         self.reference_cache[cache_key] = combined_results
@@ -1025,7 +871,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     def _extract_search_terms(self, query: str) -> List[str]:
         """
-        Extract all possible search terms from the query
+        Extract potentially relevant search terms from the query
         """
         # Patterns for different types of potential search terms
         patterns = [
@@ -1053,49 +899,28 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         
         # Add bi-grams (pairs of words)
         for i in range(len(words) - 1):
-            if len(words[i]) > 3 and len(words[i+1]) > 3:
+            if i < 2 and len(words[i]) > 3 and len(words[i+1]) > 3:  # Limit to first 2 pairs
                 bigram = f"{words[i]} {words[i+1]}"
                 potential_terms.append(bigram)
         
-        # Extract medication categories and conditions
-        categories = [
-            "analgésico", "antibiótico", "antiinflamatorio", "antidepresivo", 
-            "ansiolítico", "antihistamínico", "antihipertensivo", "hipnótico",
-            "antiácido", "anticoagulante", "antidiabético", "antipsicótico",
-            "corticoide", "diurético", "laxante", "mucolítico"
-        ]
-        
-        conditions = [
-            "hipertensión", "diabetes", "asma", "ansiedad", "depresión",
-            "dolor", "infección", "alergia", "insomnio", "artritis",
-            "migraña", "úlcera", "reflujo", "colesterol", "epilepsia"
-        ]
-        
-        # Add any matching categories and conditions
-        query_lower = query.lower()
-        for term in categories + conditions:
-            if term in query_lower:
-                potential_terms.append(term)
-        
         # Remove duplicates
         seen = set()
-        return [x for x in potential_terms if x.lower() not in seen and not seen.add(x.lower())]
+        return [x for x in potential_terms if x.lower() not in seen and not seen.add(x.lower())][:5]  # Limit to top 5
 
     async def _search_medications(self, session, query: str) -> List[Dict]:
         """
-        Search medications with multiple strategies
+        Search medications using multiple strategies
         """
         search_url = f"{self.base_url}/medicamentos"
         all_results = []
         
-        # Search strategies in order of relevance
+        # Search strategies in order of relevance - prioritize specific searches
         search_strategies = [
             {"params": {"nombre": query}},
-            {"params": {"practiv1": query}},
-            {"params": {"atc": query}}
+            {"params": {"practiv1": query}}
         ]
         
-        # Execute searches concurrently
+        # Execute first two strategies concurrently for speed
         async def execute_search(params):
             try:
                 async with session.get(search_url, params=params) as response:
@@ -1107,7 +932,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                 logger.error(f"Error in medication search: {str(e)}")
             return []
         
-        # Run all searches concurrently
+        # Run primary searches concurrently
         search_tasks = [execute_search(strategy["params"]) for strategy in search_strategies]
         search_results = await asyncio.gather(*search_tasks)
         
@@ -1138,21 +963,18 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     async def _search_in_ficha_tecnica(self, session, query: str) -> List[Dict]:
         """
-        Search in technical files for more comprehensive results
+        Search in technical files for more comprehensive results (used as fallback)
         """
         results = []
         search_url = f"{self.base_url}/buscarEnFichaTecnica"
         
-        # Important sections in ficha técnica for comprehensive search
-        sections = ["4.1", "4.2", "4.3", "4.4", "5.1"]
+        # Important sections in ficha técnica for comprehensive search (reduced to key sections)
+        sections = ["4.1", "4.2"]
         
-        # Extract key words for search
-        words = [word for word in query.split() if len(word) > 3]
+        # Extract key words for search (limit to 2 words for performance)
+        words = [word for word in query.split() if len(word) > 3][:2]
         if not words:
             return []
-            
-        # Limit to 3 words for performance
-        words = words[:3]
         
         search_body = []
         for section in sections:
@@ -1172,194 +994,216 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         except Exception as e:
             logger.error(f"Error in ficha técnica search: {str(e)}")
         
-        return results
+        return results[:3]  # Limit to top 3 results
 
-    async def _get_complete_medication_details(self, session, med: Dict, fetch_prospecto: bool = False) -> str:
+    async def _get_optimized_medication_details(self, session, med: Dict, fetch_prospecto: bool = False) -> str:
         """
-        Get comprehensive details for a medication
+        Get essential medication details in an optimized way
         """
         if not isinstance(med, dict) or not med.get("nregistro"):
             return ""
         
         nregistro = med.get("nregistro")
         
-        # Track all API calls to make concurrently
-        api_tasks = []
-        
-        # 1. Basic information
-        async def get_basic_info():
-            try:
-                url = f"{self.base_url}/medicamento"
-                async with session.get(url, params={"nregistro": nregistro}) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if isinstance(result, dict):
-                            return {"type": "basic", "data": result}
-            except Exception as e:
-                logger.error(f"Error getting basic info: {str(e)}")
-            return {"type": "basic", "data": {}}
-        
-        api_tasks.append(get_basic_info())
-        
-        # 2. Technical sections
-        key_sections = {
+        # Define the essential sections to retrieve (focusing on the most important ones)
+        essential_sections = {
             "4.1": "indicaciones",
             "4.2": "posologia",
             "4.3": "contraindicaciones",
-            "4.4": "advertencias",
-            "4.5": "interacciones",
-            "4.6": "embarazo_lactancia",
-            "4.8": "efectos_adversos",
-            "5.1": "propiedades_farmacodinamicas",
-            "5.2": "propiedades_farmacocineticas",
-            "6.1": "excipientes"
+            "4.8": "efectos_adversos"
         }
         
-        async def get_section(section, key):
-            try:
-                section_url = f"{self.base_url}/docSegmentado/contenido/1"
-                async with session.get(section_url, params={"nregistro": nregistro, "seccion": section}) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if isinstance(result, dict) and "contenido" in result:
-                            return {"type": "section", "key": key, "data": result.get("contenido", "")}
-            except Exception as e:
-                logger.error(f"Error getting section {section}: {str(e)}")
-            return {"type": "section", "key": key, "data": "No disponible"}
-        
-        for section, key in key_sections.items():
-            api_tasks.append(get_section(section, key))
-        
-        # 3. Prospecto if requested
-        if fetch_prospecto:
-            async def get_prospecto():
-                try:
-                    # Try the HTML version first
-                    url = f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/Prospecto.html"
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            content = await response.text()
-                            return {"type": "prospecto", "data": content}
-                        
-                    # If that fails, try the segmented API
-                    url2 = f"{self.base_url}/docSegmentado/contenido/2"
-                    params = {"nregistro": nregistro}
-                    headers = {"Accept": "text/html"}
-                    async with session.get(url2, params=params, headers=headers) as response:
-                        if response.status == 200:
-                            content = await response.text()
-                            return {"type": "prospecto", "data": content}
-                except Exception as e:
-                    logger.error(f"Error getting prospecto: {str(e)}")
-                return {"type": "prospecto", "data": "No disponible"}
-                
-            api_tasks.append(get_prospecto())
-        
-        # 3. Presentations
-        async def get_presentations():
-            try:
-                url = f"{self.base_url}/presentaciones"
-                async with session.get(url, params={"nregistro": nregistro}) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if isinstance(result, dict) and "resultados" in result:
-                            return {"type": "presentations", "data": result.get("resultados", [])}
-            except Exception as e:
-                logger.error(f"Error getting presentations: {str(e)}")
-            return {"type": "presentations", "data": []}
-        
-        api_tasks.append(get_presentations())
-        
-        # Execute all API calls concurrently
-        api_results = await asyncio.gather(*api_tasks)
-        
-        # Process results
+        # 1. Get basic information first (most important)
         basic_info = {}
+        try:
+            url = f"{self.base_url}/medicamento"
+            async with session.get(url, params={"nregistro": nregistro}) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if isinstance(result, dict):
+                        basic_info = result
+        except Exception as e:
+            logger.error(f"Error getting basic info: {str(e)}")
+            return ""  # If we can't get basic info, abort
+        
+        # 2. Get essential sections concurrently
         sections_data = {}
-        presentations = []
+        
+        # Limit concurrent requests
+        semaphore = asyncio.Semaphore(4)
+        
+        async def fetch_section(section, key):
+            async with semaphore:
+                try:
+                    section_url = f"{self.base_url}/docSegmentado/contenido/1"
+                    async with session.get(section_url, params={"nregistro": nregistro, "seccion": section}) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            if isinstance(result, dict) and "contenido" in result:
+                                content = result.get("contenido", "")
+                                # Limit content length to reduce token usage (300 chars per section)
+                                if len(content) > 300:
+                                    content = content[:297] + "..."
+                                return (key, content)
+                except Exception as e:
+                    logger.error(f"Error getting section {section}: {str(e)}")
+                return (key, "No disponible")
+        
+        # Execute section fetches concurrently
+        section_tasks = [fetch_section(section, key) for section, key in essential_sections.items()]
+        section_results = await asyncio.gather(*section_tasks)
+        
+        for key, content in section_results:
+            sections_data[key] = content
+        
+        # 3. Get prospecto if requested (only essential for prospecto requests)
         prospecto_data = None
+        if fetch_prospecto:
+            try:
+                # Try the direct HTML endpoint first (more efficient)
+                prospecto_url = f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html"
+                async with session.get(prospecto_url) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        # Extract just the main content to reduce size
+                        # Simple approximation - extract content between main tags if present
+                        main_content = re.search(r'<main.*?>(.*?)</main>', content, re.DOTALL)
+                        if main_content:
+                            prospecto_data = main_content.group(1)
+                        else:
+                            # If no main tags, just take a portion of the content
+                            prospecto_data = content[:1000] + "..."
+            except Exception as e:
+                logger.error(f"Error getting prospecto: {str(e)}")
         
-        for result in api_results:
-            if result["type"] == "basic":
-                basic_info = result["data"]
-            elif result["type"] == "section":
-                sections_data[result["key"]] = result["data"]
-            elif result["type"] == "presentations":
-                presentations = result["data"]
-            elif result["type"] == "prospecto":
-                prospecto_data = result["data"]
-        
-        # Format into a comprehensive text description
-        return self._format_medication_details_text(med, basic_info, sections_data, presentations, nregistro, prospecto_data)
-        
-    def _format_medication_details_text(self, med, basic_info, sections_data, presentations, nregistro, prospecto_data=None):
-        """Format all medication details into comprehensive text"""
+        # 4. Format the data into a concise text representation
         # Basic details
         name = med.get("nombre", basic_info.get("nombre", "No disponible"))
         pactivos = med.get("pactivos", basic_info.get("pactivos", "No disponible"))
         lab = basic_info.get("labtitular", "No disponible")
         
-        # URL of the technical data sheet
+        # URLs
         ficha_url = f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html"
         prospecto_url = f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html"
         
-        # Build the information block
+        # Format dates if available
+        estado = basic_info.get("estado", {})
+        fecha_aut = self._format_date(estado.get("aut", "")) if isinstance(estado, dict) else "No disponible"
+        
+        # Build the information block - focus on essentials
         info_parts = [
             f"[Ref: {name} (Nº Registro: {nregistro})]",
             f"Nombre: {name}",
             f"Principios activos: {pactivos}",
-            f"Laboratorio: {lab}"
+            f"Laboratorio: {lab}",
+            f"Fecha autorización: {fecha_aut}"
         ]
         
-        # Add authorization state
-        estado = basic_info.get("estado", {})
-        if isinstance(estado, dict):
-            if "aut" in estado:
-                info_parts.append(f"Fecha autorización: {self._format_date(estado.get('aut'))}")
-            if "susp" in estado:
-                info_parts.append(f"Fecha suspensión: {self._format_date(estado.get('susp'))}")
-            if "rev" in estado:
-                info_parts.append(f"Fecha revocación: {self._format_date(estado.get('rev'))}")
-        
-        # Add all section information
+        # Add essential sections
         for key, title in {
             "indicaciones": "INDICACIONES TERAPÉUTICAS",
             "posologia": "POSOLOGÍA Y FORMA DE ADMINISTRACIÓN",
             "contraindicaciones": "CONTRAINDICACIONES",
-            "advertencias": "ADVERTENCIAS Y PRECAUCIONES",
-            "interacciones": "INTERACCIONES",
-            "embarazo_lactancia": "EMBARAZO Y LACTANCIA",
-            "efectos_adversos": "EFECTOS ADVERSOS",
-            "propiedades_farmacodinamicas": "PROPIEDADES FARMACODINÁMICAS",
-            "propiedades_farmacocineticas": "PROPIEDADES FARMACOCINÉTICAS",
-            "excipientes": "EXCIPIENTES"
+            "efectos_adversos": "EFECTOS ADVERSOS"
         }.items():
             content = sections_data.get(key, "")
             if content and len(content.strip()) > 0:
                 info_parts.append(f"{title}:\n{content}")
         
-        # Add presentations
-        if presentations:
-            info_parts.append("PRESENTACIONES:")
-            for i, pres in enumerate(presentations[:3], 1):
-                cn = pres.get("cn", "")
-                nombre_pres = pres.get("nombre", "")
-                estado_pres = "Comercializada" if pres.get("comerc") else "No comercializada"
-                info_parts.append(f"{i}. CN: {cn} - {nombre_pres} - {estado_pres}")
-        
-        # Add prospecto if available
-        if prospecto_data and prospecto_data != "No disponible":
-            info_parts.append("PROSPECTO:")
-            # Clean HTML if needed (simple cleaning)
-            cleaned_prospecto = re.sub(r'<[^>]+>', ' ', prospecto_data)
-            cleaned_prospecto = re.sub(r'\s+', ' ', cleaned_prospecto).strip()
-            info_parts.append(cleaned_prospecto)
+        # Add prospecto data if available (for prospecto requests)
+        if prospecto_data:
+            # Clean HTML tags for readability
+            clean_prospecto = re.sub(r'<[^>]+>', ' ', prospecto_data)
+            clean_prospecto = re.sub(r'\s+', ' ', clean_prospecto).strip()
+            if len(clean_prospecto) > 500:  # Ensure it's not too long
+                clean_prospecto = clean_prospecto[:497] + "..."
+            info_parts.append(f"PROSPECTO (extracto):\n{clean_prospecto}")
         
         # Add links to technical data sheet and prospecto
         info_parts.append(f"Ficha técnica completa: {ficha_url}")
         info_parts.append(f"Prospecto completo: {prospecto_url}")
         
         return "\n\n".join(info_parts)
+
+    def truncate_context(self, context: str) -> str:
+        """Truncate context to fit within token limits"""
+        # Calculate how many tokens we can use for context
+        system_tokens = count_tokens(self.system_prompt, Config.CHAT_MODEL)
+        history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in self.conversation_history[-4:]])
+        history_tokens = count_tokens(history_text, Config.CHAT_MODEL)
+        
+        # Leave room for the response (4000 tokens) and user query (500 tokens)
+        available_tokens = self.max_tokens - system_tokens - history_tokens - 4500
+        
+        # If available tokens is negative, we need to truncate history instead
+        if available_tokens < 1000:  # Minimum threshold
+            # Reduce history usage
+            self.conversation_history = self.conversation_history[-2:]
+            # Recalculate
+            history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in self.conversation_history])
+            history_tokens = count_tokens(history_text, Config.CHAT_MODEL)
+            available_tokens = self.max_tokens - system_tokens - history_tokens - 4500
+        
+        # Ensure we have at least 1000 tokens for context
+        available_tokens = max(1000, available_tokens)
+        
+        # If context is already within limits, return as is
+        context_tokens = count_tokens(context, Config.CHAT_MODEL)
+        if context_tokens <= available_tokens:
+            return context
+        
+        # Split context into medication references
+        references = context.split("[Ref:")
+        if not references:
+            return "No se encontró información relevante."
+        
+        # Start with any header text
+        result = references[0]
+        current_tokens = count_tokens(result, Config.CHAT_MODEL)
+        
+        # Process each reference
+        for i, ref in enumerate(references[1:], 1):
+            # Restore the reference prefix
+            ref_text = "[Ref:" + ref
+            ref_tokens = count_tokens(ref_text, Config.CHAT_MODEL)
+            
+            # If adding this reference would exceed the limit
+            if current_tokens + ref_tokens > available_tokens:
+                # If this is the first reference, we need to include at least part of it
+                if i == 1:
+                    # Extract the essential parts only
+                    ref_lines = ref_text.split('\n')
+                    essential_lines = []
+                    
+                    # Include reference header and basic info
+                    for j, line in enumerate(ref_lines):
+                        if j < 5 or "INDICACIONES" in line:  # First 5 lines + indications
+                            essential_lines.append(line)
+                    
+                    # Add URLs at the end
+                    for line in ref_lines:
+                        if "Ficha técnica" in line or "Prospecto" in line:
+                            essential_lines.append(line)
+                    
+                    partial_ref = '\n'.join(essential_lines)
+                    partial_tokens = count_tokens(partial_ref, Config.CHAT_MODEL)
+                    
+                    if current_tokens + partial_tokens <= available_tokens:
+                        result += partial_ref
+                    else:
+                        # We're really out of space, just take the first few lines
+                        first_lines = '\n'.join(ref_lines[:3])
+                        result += first_lines + "\n[...información truncada por limitaciones de espacio...]"
+                
+                # Add a note that information was truncated
+                result += "\n\n[Se ha truncado parte de la información debido a limitaciones de tamaño.]"
+                break
+            else:
+                # This reference fits, add it
+                result += ref_text
+                current_tokens += ref_tokens
+        
+        return result
 
     def _format_date(self, unix_timestamp):
         """Format dates from Unix timestamp to readable format"""
@@ -1375,7 +1219,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     async def chat(self, message: str) -> Dict[str, str]:
         """
-        Handle chat messages with comprehensive context
+        Handle chat messages with comprehensive context but within token limits
         """
         try:
             # Check if this is a prospecto request
@@ -1397,6 +1241,25 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
             # Choose the appropriate system prompt
             system_prompt = self.prospecto_prompt if is_prospecto else self.system_prompt
             
+            # Calculate token usage to ensure we're within limits
+            history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in self.conversation_history[-4:]])
+            message_tokens = count_tokens(message, Config.CHAT_MODEL)
+            system_tokens = count_tokens(system_prompt, Config.CHAT_MODEL)
+            history_tokens = count_tokens(history_text, Config.CHAT_MODEL)
+            context_tokens = count_tokens(context, Config.CHAT_MODEL)
+            
+            total_tokens = system_tokens + history_tokens + message_tokens + context_tokens
+            logger.info(f"Token usage estimate: {total_tokens} (limit: {self.max_tokens})")
+            
+            # If we're over the limit, truncate the context
+            if total_tokens > self.max_tokens:
+                logger.warning(f"Total tokens ({total_tokens}) exceeds limit, truncating context")
+                context = self.truncate_context(context)
+                # Recalculate
+                context_tokens = count_tokens(context, Config.CHAT_MODEL)
+                total_tokens = system_tokens + history_tokens + message_tokens + context_tokens
+                logger.info(f"After truncation: {total_tokens} tokens")
+            
             # Prepare the prompt
             prompt = f"""
 Consulta: {message}
@@ -1408,8 +1271,8 @@ Responde de manera detallada y precisa, citando las fuentes específicas del con
 {"Genera un prospecto completo siguiendo las directrices de la AEMPS." if is_prospecto else ""}
 """
             
-            # Using last 5 messages for context 
-            recent_history = self.conversation_history[-5:] if len(self.conversation_history) > 5 else self.conversation_history
+            # Using last 4 messages for context 
+            recent_history = self.conversation_history[-4:] if len(self.conversation_history) > 4 else self.conversation_history
             
             messages = [
                 {"role": "system", "content": system_prompt},
