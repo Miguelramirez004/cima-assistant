@@ -1,9 +1,12 @@
 import streamlit as st
 import asyncio
 import openai
+from openai import AsyncOpenAI
 import re
 import os
 from dotenv import load_dotenv
+from formulacion import FormulationAgent, CIMAExpertAgent
+from config import Config
 
 # Load environment variables
 load_dotenv()
@@ -28,34 +31,192 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Simple, reliable async helper function
+def run_async(async_func, *args, **kwargs):
+    """Run an async function in a new event loop"""
+    try:
+        # Create a new event loop for this specific operation
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(async_func(*args, **kwargs))
+    finally:
+        # Always close the loop to free resources
+        loop.close()
+
+# Global OpenAI client for reuse
+@st.cache_resource
+def get_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY") or Config.OPENAI_API_KEY
+    if not api_key:
+        st.error("No se ha encontrado la API key de OpenAI. Por favor configure el archivo .env")
+        return None
+    return AsyncOpenAI(api_key=api_key)
+
+# Initialize session state variables if not already present
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'formulation_history' not in st.session_state:
+    st.session_state.formulation_history = []
+if 'search_history' not in st.session_state:
+    st.session_state.search_history = set()
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
+if 'current_query' not in st.session_state:
+    st.session_state.current_query = ""
+
 # Title
 st.title("🧪 CIMA Assistant")
 st.markdown("### *Sistema inteligente de consulta para formulación magistral y CIMA*")
 
-# Simple page to verify app is working
-st.success("El sistema está funcionando correctamente.")
-st.info("Se ha iniciado en modo de diagnóstico para garantizar estabilidad. Pronto estarán disponibles todas las funcionalidades.")
+# Sidebar
+with st.sidebar:
+    st.header("Información")
+    st.markdown("""
+    Este asistente utiliza la API CIMA (Centro de Información online de Medicamentos) de la AEMPS para proporcionar:
+    
+    - Formulaciones magistrales detalladas
+    - Consultas sobre medicamentos
+    - Referencias directas a fichas técnicas
+    """)
+    
+    st.header("Historial de búsquedas")
+    if st.session_state.search_history:
+        for query in list(st.session_state.search_history)[-5:]:
+            st.markdown(f"- {query}")
+    else:
+        st.markdown("No hay búsquedas recientes")
+    
+    if st.button("Limpiar historial"):
+        st.session_state.search_history = set()
+        st.session_state.formulation_history = []
+        st.session_state.messages = []
+        st.rerun()
 
-# Basic tab structure 
+# Main tabs
 tab1, tab2, tab3 = st.tabs(["Formulación Magistral", "Consultas CIMA", "Historial"])
 
 with tab1:
-    st.write("### Asistente para formulación magistral basado en CIMA")
-    st.markdown("""
-    <div class="info-box">
-    Ingrese su consulta sobre formulación magistral. Especifique el principio activo, 
-    concentración deseada y tipo de formulación para obtener mejores resultados.
-    </div>
-    """, unsafe_allow_html=True)
+    col1, col2 = st.columns([3, 1])
     
-    query_fm = st.text_area(
-        "Ingrese su consulta sobre formulación:",
-        height=100, 
-        placeholder="Ejemplo: Suspensión de Ibuprofeno 100mg/ml para uso pediátrico",
-        disabled=True
-    )
+    with col1:
+        st.write("### Asistente para formulación magistral basado en CIMA")
+        st.markdown("""
+        <div class="info-box">
+        Ingrese su consulta sobre formulación magistral. Especifique el principio activo, 
+        concentración deseada y tipo de formulación para obtener mejores resultados.
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Handle query text area
+        query_fm = st.text_area(
+            "Ingrese su consulta sobre formulación:",
+            value=st.session_state.current_query,
+            height=100, 
+            placeholder="Ejemplo: Suspensión de Ibuprofeno 100mg/ml para uso pediátrico"
+        )
     
-    st.button("Consultar Formulación", type="primary", disabled=True)
+    with col2:
+        st.write("### Ejemplos")
+        example_queries = [
+            "Suspensión de Omeprazol 2mg/ml",
+            "Crema de Hidrocortisona al 1%",
+            "Cápsulas de Melatonina 3mg",
+            "Gel de Metronidazol 0.75%",
+            "Solución de Minoxidil 5%"
+        ]
+        
+        for example in example_queries:
+            if st.button(example):
+                st.session_state.current_query = example
+                st.rerun()
+    
+    if st.button("Consultar Formulación", type="primary"):
+        if not query_fm:
+            st.warning("Por favor ingrese una consulta")
+        else:
+            # Update current query
+            st.session_state.current_query = query_fm
+            
+            # Add to search history
+            st.session_state.search_history.add(query_fm)
+            
+            # Progress indicators for better user experience
+            progress_placeholder = st.empty()
+            status_text = st.empty()
+            
+            with st.spinner("Procesando su consulta..."):
+                try:
+                    # Show progress updates
+                    with progress_placeholder.container():
+                        progress_bar = st.progress(0)
+                    
+                    status_text.text("Buscando información en CIMA...")
+                    progress_bar.progress(25)
+                    
+                    # Create agent for this specific request
+                    openai_client = get_openai_client()
+                    if not openai_client:
+                        st.error("No se puede conectar con OpenAI. Verifique su API key.")
+                    else:
+                        formulation_agent = FormulationAgent(openai_client)
+                        
+                        # Get response using our helper function
+                        response = run_async(formulation_agent.answer_question, query_fm)
+                        
+                        # Update progress
+                        status_text.text("Generando formulación...")
+                        progress_bar.progress(75)
+                        
+                        # Store in formulation history
+                        st.session_state.formulation_history.append({
+                            "query": query_fm,
+                            "response": response["answer"],
+                            "context": response["context"],
+                            "references": response["references"]
+                        })
+                        
+                        # Complete progress
+                        progress_bar.progress(100)
+                        status_text.empty()
+                        progress_placeholder.empty()
+                        
+                        st.subheader("Formulación:")
+                        st.markdown(response["answer"])
+                        
+                        # Extract and display references
+                        references = re.findall(r'\[Ref \d+:.*?\]', response["answer"])
+                        if references:
+                            st.subheader("Referencias utilizadas:")
+                            for ref in references:
+                                st.markdown(f"- {ref}")
+                        
+                        with st.expander("Ver contexto de CIMA"):
+                            st.markdown(response["context"])
+                        
+                        # Option to download the formulación
+                        formulacion_text = f"""# Formulación Magistral
+
+## Consulta
+{query_fm}
+
+## Formulación
+{response["answer"]}
+
+## Referencias
+{response["context"]}
+"""
+                        st.download_button(
+                            label="Descargar formulación",
+                            data=formulacion_text,
+                            file_name=f"formulacion_{query_fm[:30].replace(' ', '_')}.md",
+                            mime="text/markdown"
+                        )
+                        
+                        # Clean up resources
+                        run_async(formulation_agent.close)
+                    
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
 
 with tab2:
     st.write("### Chat con experto CIMA")
@@ -66,55 +227,98 @@ with tab2:
     </div>
     """, unsafe_allow_html=True)
     
-    st.text_area("Mensaje:", disabled=True)
-    st.button("Enviar", disabled=True)
+    # Chat container
+    chat_container = st.container()
+    
+    # Display chat messages
+    with chat_container:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+    
+    # Chat input
+    if prompt := st.chat_input("Escriba su consulta sobre medicamentos..."):
+        # Add to search history
+        st.session_state.search_history.add(prompt)
+        
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        # Process and display assistant response
+        with st.chat_message("assistant"):
+            # Progress indicators
+            progress_placeholder = st.empty()
+            status_text = st.empty()
+            
+            with st.spinner("Buscando información en CIMA..."):
+                try:
+                    # Show progress updates
+                    with progress_placeholder.container():
+                        progress_bar = st.progress(0)
+                    
+                    status_text.text("Consultando CIMA...")
+                    progress_bar.progress(30)
+                    
+                    # Create agent for this specific request
+                    openai_client = get_openai_client()
+                    if not openai_client:
+                        st.error("No se puede conectar con OpenAI. Verifique su API key.")
+                    else:
+                        cima_agent = CIMAExpertAgent(openai_client)
+                        
+                        # Copy conversation history to agent
+                        for msg in st.session_state.messages[:-1]:  # Exclude the most recent message
+                            if msg["role"] == "user":
+                                cima_agent.conversation_history.append({"role": "user", "content": msg["content"]})
+                            else:
+                                cima_agent.conversation_history.append({"role": "assistant", "content": msg["content"]})
+                        
+                        # Process response using our helper function
+                        response = run_async(cima_agent.chat, prompt)
+                        
+                        # Update progress
+                        status_text.text("Generando respuesta...")
+                        progress_bar.progress(80)
+                        
+                        # Clear progress indicators
+                        progress_bar.progress(100)
+                        status_text.empty()
+                        progress_placeholder.empty()
+                        
+                        # Show response
+                        st.markdown(response["answer"])
+                        
+                        # Show sources in expander
+                        with st.expander("Ver fuentes"):
+                            st.markdown(response["context"])
+                            
+                        # Clean up resources
+                        run_async(cima_agent.close)
+                except Exception as e:
+                    st.markdown(f"Error: {str(e)}")
+                    
+        # Add to session state
+        st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
+    
+    # Button for new conversation
+    if st.button("Nueva conversación", key="new_chat"):
+        st.session_state.messages = []
+        st.rerun()
 
 with tab3:
     st.header("Historial de formulaciones")
-    st.info("El historial estará disponible próximamente.")
-
-# Display environment check information
-st.subheader("Información de diagnóstico")
-
-try:
-    # Check OpenAI
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    openai_status = "✅ API Key configurada" if openai_api_key else "❌ API Key no encontrada"
-    st.write(f"OpenAI: {openai_status}")
     
-    # Check event loop
-    try:
-        loop = asyncio.get_event_loop()
-        loop_status = f"✅ Event loop disponible ({loop})"
-    except RuntimeError as e:
-        loop_status = f"❌ Error de event loop: {str(e)}"
-    st.write(f"AsyncIO: {loop_status}")
-    
-    # Check Python version
-    import sys
-    st.write(f"Python: {sys.version}")
-    
-    # Check libraries
-    import pkg_resources
-    libraries = ['streamlit', 'openai', 'aiohttp', 'python-dotenv', 'httpx', 'nest-asyncio']
-    st.write("Librerías instaladas:")
-    for lib in libraries:
-        try:
-            version = pkg_resources.get_distribution(lib).version
-            st.write(f"- {lib}: ✅ v{version}")
-        except pkg_resources.DistributionNotFound:
-            st.write(f"- {lib}: ❌ No instalada")
-
-except Exception as e:
-    st.error(f"Error en diagnóstico: {str(e)}")
-
-# Contacto e instrucciones
-st.markdown("""
----
-### Próximos pasos
-1. Verifique que todas las librerías están correctamente instaladas
-2. Compruebe que la API Key de OpenAI está configurada en el archivo .env
-3. Reinicie la aplicación después de corregir cualquier problema detectado
-
-Para restaurar todas las funcionalidades, por favor contacte al soporte técnico.
-""")
+    if not st.session_state.formulation_history:
+        st.info("No hay formulaciones en el historial")
+    else:
+        for i, item in enumerate(st.session_state.formulation_history):
+            with st.expander(f"Formulación: {item['query']}"):
+                st.markdown(item["response"])
+                st.download_button(
+                    label="Descargar",
+                    data=f"""# Formulación Magistral\n\n## Consulta\n{item['query']}\n\n## Formulación\n{item["response"]}\n\n## Referencias\n{item["context"]}""",
+                    file_name=f"formulacion_{i}.md",
+                    mime="text/markdown"
+                )
