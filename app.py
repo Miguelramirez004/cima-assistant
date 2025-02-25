@@ -1,18 +1,31 @@
 import streamlit as st
 import asyncio
+import nest_asyncio
 import openai
 from openai import AsyncOpenAI
 import re
 import os
+import logging
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from formulacion import FormulationAgent, CIMAExpertAgent
 from config import Config
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # Load environment variables (for local development)
 load_dotenv()
 
+# Apply nest_asyncio to allow nested event loops
+nest_asyncio.apply()
+
 # Configure page
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
+
+# Global executor for running async code
+executor = ThreadPoolExecutor(max_workers=4)
 
 # Simple CSS
 st.markdown("""
@@ -31,17 +44,31 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Simple, reliable async helper function
+# Improved run_async function to handle event loop issues
 def run_async(async_func, *args, **kwargs):
-    """Run an async function in a new event loop"""
-    try:
+    """Run an async function in a dedicated event loop with proper cleanup"""
+    def run_in_executor():
         # Create a new event loop for this specific operation
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        return loop.run_until_complete(async_func(*args, **kwargs))
-    finally:
-        # Always close the loop to free resources
-        loop.close()
+        try:
+            return loop.run_until_complete(async_func(*args, **kwargs))
+        except Exception as e:
+            logger.error(f"Error in async execution: {str(e)}")
+            raise
+        finally:
+            # Give pending tasks a chance to complete
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            
+            # Close the loop properly
+            if hasattr(loop, 'shutdown_asyncgens'):
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+    
+    # Run the async code in a separate thread with its own event loop
+    return executor.submit(run_in_executor).result()
 
 # Global OpenAI client for reuse
 @st.cache_resource
@@ -60,6 +87,39 @@ def get_openai_client():
         
     return AsyncOpenAI(api_key=api_key)
 
+# Initialize and manage agent resources
+@st.cache_resource
+def init_agents():
+    """Initialize the agents with proper resource management"""
+    openai_client = get_openai_client()
+    if not openai_client:
+        return None, None
+    
+    formulation_agent = FormulationAgent(openai_client)
+    cima_agent = CIMAExpertAgent(openai_client)
+    
+    # Register cleanup handler for Streamlit session end
+    def cleanup_resources():
+        """Properly clean up resources when the Streamlit session ends"""
+        try:
+            # Run the close methods in a new event loop
+            cleanup_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(cleanup_loop)
+            cleanup_loop.run_until_complete(asyncio.gather(
+                formulation_agent.close(), 
+                cima_agent.close(),
+                return_exceptions=True
+            ))
+            cleanup_loop.close()
+        except Exception as e:
+            logger.error(f"Error during cleanup: {str(e)}")
+    
+    # Register the cleanup function to be called on app shutdown
+    import atexit
+    atexit.register(cleanup_resources)
+    
+    return formulation_agent, cima_agent
+
 # Initialize session state variables if not already present
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
@@ -71,6 +131,8 @@ if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'current_query' not in st.session_state:
     st.session_state.current_query = ""
+if 'agents' not in st.session_state:
+    st.session_state.agents = init_agents()
 
 # Check OpenAI API key at startup
 openai_client = get_openai_client()
@@ -104,6 +166,8 @@ with st.sidebar:
     if st.button("Limpiar historial"):
         st.session_state.search_history = set()
         st.session_state.formulation_history = []
+        if st.session_state.agents and st.session_state.agents[1]:
+            st.session_state.agents[1].clear_history()
         st.session_state.messages = []
         st.rerun()
 
@@ -168,14 +232,12 @@ with tab1:
                     status_text.text("Buscando información en CIMA...")
                     progress_bar.progress(25)
                     
-                    # Create agent for this specific request
-                    openai_client = get_openai_client()
-                    if not openai_client:
+                    # Get formulation agent from session state
+                    formulation_agent = st.session_state.agents[0]
+                    if not formulation_agent:
                         st.error("No se puede conectar con OpenAI. Verifique su API key.")
                     else:
-                        formulation_agent = FormulationAgent(openai_client)
-                        
-                        # Get response using our helper function
+                        # Get response using our improved helper function
                         response = run_async(formulation_agent.answer_question, query_fm)
                         
                         # Update progress
@@ -226,12 +288,9 @@ with tab1:
                             file_name=f"formulacion_{query_fm[:30].replace(' ', '_')}.md",
                             mime="text/markdown"
                         )
-                        
-                        # Clean up resources
-                        run_async(formulation_agent.close)
-                    
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
+                    logger.error(f"Error processing formulation query: {str(e)}")
 
 with tab2:
     st.write("### Chat con experto CIMA")
@@ -276,21 +335,12 @@ with tab2:
                     status_text.text("Consultando CIMA...")
                     progress_bar.progress(30)
                     
-                    # Create agent for this specific request
-                    openai_client = get_openai_client()
-                    if not openai_client:
+                    # Get CIMA agent from session state
+                    cima_agent = st.session_state.agents[1]
+                    if not cima_agent:
                         st.error("No se puede conectar con OpenAI. Verifique su API key.")
                     else:
-                        cima_agent = CIMAExpertAgent(openai_client)
-                        
-                        # Copy conversation history to agent
-                        for msg in st.session_state.messages[:-1]:  # Exclude the most recent message
-                            if msg["role"] == "user":
-                                cima_agent.conversation_history.append({"role": "user", "content": msg["content"]})
-                            else:
-                                cima_agent.conversation_history.append({"role": "assistant", "content": msg["content"]})
-                        
-                        # Process response using our helper function
+                        # Process response using our improved helper function
                         response = run_async(cima_agent.chat, prompt)
                         
                         # Update progress
@@ -308,10 +358,8 @@ with tab2:
                         # Show sources in expander
                         with st.expander("Ver fuentes"):
                             st.markdown(response["context"])
-                            
-                        # Clean up resources
-                        run_async(cima_agent.close)
                 except Exception as e:
+                    logger.error(f"Error in chat response: {str(e)}")
                     st.markdown(f"Error: {str(e)}")
                     
         # Add to session state
@@ -320,6 +368,8 @@ with tab2:
     # Button for new conversation
     if st.button("Nueva conversación", key="new_chat"):
         st.session_state.messages = []
+        if st.session_state.agents and st.session_state.agents[1]:
+            st.session_state.agents[1].clear_history()
         st.rerun()
 
 with tab3:
