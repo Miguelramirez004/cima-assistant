@@ -1,6 +1,6 @@
 import streamlit as st
 import asyncio
-from openai import AsyncOpenAI
+import openai
 from formulacion import FormulationAgent, CIMAExpertAgent
 from config import Config
 import re
@@ -9,9 +9,11 @@ import os
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
 def init_agents():
-    # Simple initialization of OpenAI client with just the API key
-    client = AsyncOpenAI(api_key=Config.OPENAI_API_KEY)
-    return FormulationAgent(client), CIMAExpertAgent(client)
+    # Initialize OpenAI client
+    openai.api_key = Config.OPENAI_API_KEY
+    
+    # Use the older API pattern for OpenAI v0.28.1
+    return FormulationAgent(openai), CIMAExpertAgent(openai)
 
 # Custom CSS with just the essential styling
 st.markdown("""
