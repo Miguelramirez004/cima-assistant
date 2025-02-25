@@ -1,5 +1,6 @@
 import streamlit as st
 import asyncio
+import nest_asyncio
 from openai import AsyncOpenAI
 from formulacion import FormulationAgent, CIMAExpertAgent
 from config import Config
@@ -7,15 +8,45 @@ import re
 import os
 from openai_client import create_async_openai_client
 
+# Apply nest_asyncio to allow nested event loops
+# This helps prevent "Event loop is closed" errors in Streamlit
+nest_asyncio.apply()
+
+# Configure page settings
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
+# Ensure we have a single, reusable event loop
+@st.cache_resource
+def get_event_loop():
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop
+
+# Get or create event loop
+loop = get_event_loop()
+
+# Initialize async resources with proper lifecycle management
+@st.cache_resource
 def init_agents():
-    """Initialize OpenAI client and agents"""
-    # Initialize OpenAI client for v1.3.0
+    """Initialize OpenAI client and agents with proper async resource management"""
     openai_client = create_async_openai_client(api_key=Config.OPENAI_API_KEY)
     
-    # Pass the client instance, not the module
-    return FormulationAgent(openai_client), CIMAExpertAgent(openai_client)
+    # Initialize the agents with the client
+    formulation_agent = FormulationAgent(openai_client)
+    cima_expert_agent = CIMAExpertAgent(openai_client)
+    
+    return formulation_agent, cima_expert_agent
+
+# Run async function within our managed event loop
+def run_async(coro):
+    """Run an async function within our managed event loop"""
+    return loop.run_until_complete(coro)
 
 # Custom CSS with just the essential styling
 st.markdown("""
@@ -146,8 +177,8 @@ with tab1:
                     status_text.text("Buscando información en CIMA...")
                     progress_bar.progress(25)
                     
-                    # Get response
-                    response = asyncio.run(st.session_state.agents[0].answer_question(query_fm))
+                    # Get response using our managed event loop
+                    response = run_async(st.session_state.agents[0].answer_question(query_fm))
                     
                     # Update progress
                     status_text.text("Generando formulación...")
@@ -244,8 +275,8 @@ with tab2:
                     status_text.text("Consultando CIMA...")
                     progress_bar.progress(30)
                     
-                    # Process response
-                    response = asyncio.run(st.session_state.agents[1].chat(prompt))
+                    # Process response using our managed event loop
+                    response = run_async(st.session_state.agents[1].chat(prompt))
                     
                     # Update progress
                     status_text.text("Generando respuesta...")
