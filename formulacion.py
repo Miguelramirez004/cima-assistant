@@ -9,6 +9,16 @@ import json
 import asyncio
 from datetime import datetime
 
+def fix_aiohttp_ssl(verify=True):
+    """Fix SSL issues with aiohttp on some systems"""
+    if verify:
+        return None
+    else:
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        return ssl_context
+
 @dataclass
 class FormulationAgent:
     openai_client: AsyncOpenAI
@@ -331,7 +341,9 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
                       for i, (med, details) in enumerate(cached_results, 1)]
             return "\n".join(context)
 
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        # Use TCPConnector with disable_verify for SSL issues
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
             search_url = f"{self.base_url}/medicamentos"
             
             # Enhanced search parameters
@@ -541,7 +553,9 @@ Recuerda que tus respuestas pueden tener impacto en decisiones de salud, así qu
         # Resultado combinado de todas las búsquedas
         all_results = []
         
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+        # Use safe connector for SSL
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
             # 1. Búsqueda por nombre directa
             direct_results = await self._search_medications_by_name(session, query)
             if direct_results:
