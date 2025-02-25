@@ -1,9 +1,8 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Any, Union
-import openai
+from openai import AsyncOpenAI
 from config import Config
 import aiohttp
-import ssl
 import re
 import json
 import asyncio
@@ -11,7 +10,7 @@ from datetime import datetime
 
 @dataclass
 class FormulationAgent:
-    openai_client: Any
+    openai_client: AsyncOpenAI
     base_url: str = Config.CIMA_BASE_URL
     reference_cache: Dict[str, List[Dict]] = field(default_factory=dict)
 
@@ -159,30 +158,10 @@ Si hay información insuficiente para alguna sección, indícalo claramente y su
         Enhanced formulation type detection with additional parameters
         """
         # Dictionary for formulation types and their keywords
-        formulation_types = {
-            "suspension": ["suspension", "suspensión", "suspens"],
-            "solucion": ["solucion", "solución", "sol."],
-            "papelillos": ["papelillos", "sobres", "polvos"],
-            "pomada": ["pomada", "unguento", "crema", "pasta"],
-            "gel": ["gel", "hidrogel"],
-            "supositorios": ["supositorio", "rectal"],
-            "colirio": ["colirio", "oftálmico", "oftalmico", "gotas oculares"],
-            "jarabe": ["jarabe", "formula pediátrica", "formula pediatrica"],
-            "cápsulas": ["cápsulas", "capsulas", "encapsulado"],
-            "emulsion": ["emulsion", "emulsión", "locion", "loción"]
-        }
+        formulation_types = Config.FORMULATION_TYPES
         
         # Dictionary for pharmaceutical paths
-        admin_routes = {
-            "oral": ["oral", "vía oral", "via oral", "por boca"],
-            "topica": ["tópica", "topica", "cutánea", "cutanea"],
-            "oftalmico": ["oftálmico", "oftalmico", "ocular"],
-            "rectal": ["rectal", "vía rectal", "via rectal"],
-            "nasal": ["nasal", "intranasal"],
-            "otico": ["ótico", "otico", "auricular"],
-            "vaginal": ["vaginal", "intravaginal"],
-            "parenteral": ["parenteral", "inyectable", "inyección", "inyeccion"]
-        }
+        admin_routes = Config.ADMIN_ROUTES
         
         # Concentration patterns
         concentration_pattern = r'(\d+(?:[,.]\d+)?)\s*(%|mg|g|ml|mcg|UI|unidades)'
@@ -331,7 +310,7 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
                       for i, (med, details) in enumerate(cached_results, 1)]
             return "\n".join(context)
 
-        # Use TCPConnector with disable_verify for SSL issues
+        # Use TCPConnector without SSL verification
         connector = aiohttp.TCPConnector(ssl=False)
         async with aiohttp.ClientSession(connector=connector) as session:
             search_url = f"{self.base_url}/medicamentos"
@@ -439,7 +418,7 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
 
     async def generate_response(self, query: str, context: str) -> str:
         """
-        Enhanced response generation with better prompting - Using OpenAI v0.27.8
+        Enhanced response generation with better prompting
         """
         # Extract formulation details for improved prompting
         formulation_info = self.detect_formulation_type(query)
@@ -462,16 +441,15 @@ CONSULTA ORIGINAL:
 Por favor, genera una formulación magistral completa siguiendo la estructura indicada en las instrucciones del sistema. Cita las fuentes CIMA utilizando el formato [Ref X: Nombre del medicamento (Nº Registro)].
 """
 
-        # Using the OpenAI v0.27.8 API pattern
-        response = await openai.ChatCompletion.acreate(
-            model="gpt-3.5-turbo",
+        response = await self.openai_client.chat.completions.create(
+            model=Config.CHAT_MODEL,
             messages=[
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7
         )
-        return response.choices[0].message["content"]
+        return response.choices[0].message.content
 
     async def answer_question(self, question: str) -> Dict[str, str]:
         context = await self.get_relevant_context(question)
@@ -496,12 +474,12 @@ Por favor, genera una formulación magistral completa siguiendo la estructura in
 
 @dataclass
 class CIMAExpertAgent:
-    openai_client: Any
+    openai_client: AsyncOpenAI
     reference_cache: Dict[str, str] = field(default_factory=dict)
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
     base_url: str = Config.CIMA_BASE_URL
     
-    def __init__(self, openai_client: Any):
+    def __init__(self, openai_client: AsyncOpenAI):
         self.openai_client = openai_client
         self.reference_cache = {}
         self.base_url = Config.CIMA_BASE_URL
@@ -936,14 +914,14 @@ Si no hay información suficiente, indica qué tipo de información adicional se
                 {"role": "user", "content": prompt}
             ]
 
-            # Generar respuesta con OpenAI v0.27.8
-            response = await openai.ChatCompletion.acreate(
-                model="gpt-3.5-turbo",
+            # Generar respuesta
+            response = await self.openai_client.chat.completions.create(
+                model=Config.CHAT_MODEL,
                 messages=messages,
                 temperature=0.7
             )
 
-            assistant_response = response.choices[0].message["content"]
+            assistant_response = response.choices[0].message.content
             
             # Añadir enlaces directos a CIMA
             pattern = r'\[Ref: ([^()]+) \(Nº Registro: (\d+)\)\]'
