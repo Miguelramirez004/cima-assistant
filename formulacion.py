@@ -9,19 +9,9 @@ import json
 import asyncio
 from datetime import datetime
 
-def fix_aiohttp_ssl(verify=True):
-    """Fix SSL issues with aiohttp on some systems"""
-    if verify:
-        return None
-    else:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        return ssl_context
-
 @dataclass
 class FormulationAgent:
-    openai_client: Any  # Using older OpenAI client
+    openai_client: Any
     base_url: str = Config.CIMA_BASE_URL
     reference_cache: Dict[str, List[Dict]] = field(default_factory=dict)
 
@@ -449,7 +439,7 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
 
     async def generate_response(self, query: str, context: str) -> str:
         """
-        Enhanced response generation with better prompting - Using OpenAI v0.28.1
+        Enhanced response generation with better prompting - Using OpenAI v0.27.8
         """
         # Extract formulation details for improved prompting
         formulation_info = self.detect_formulation_type(query)
@@ -472,9 +462,9 @@ CONSULTA ORIGINAL:
 Por favor, genera una formulación magistral completa siguiendo la estructura indicada en las instrucciones del sistema. Cita las fuentes CIMA utilizando el formato [Ref X: Nombre del medicamento (Nº Registro)].
 """
 
-        # Using the older OpenAI API v0.28.1 format
+        # Using the OpenAI v0.27.8 API pattern
         response = await openai.ChatCompletion.acreate(
-            model=Config.CHAT_MODEL,
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": prompt}
@@ -506,7 +496,7 @@ Por favor, genera una formulación magistral completa siguiendo la estructura in
 
 @dataclass
 class CIMAExpertAgent:
-    openai_client: Any  # Using older OpenAI client
+    openai_client: Any
     reference_cache: Dict[str, str] = field(default_factory=dict)
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
     base_url: str = Config.CIMA_BASE_URL
@@ -946,9 +936,9 @@ Si no hay información suficiente, indica qué tipo de información adicional se
                 {"role": "user", "content": prompt}
             ]
 
-            # Generar respuesta con OpenAI v0.28.1
+            # Generar respuesta con OpenAI v0.27.8
             response = await openai.ChatCompletion.acreate(
-                model=Config.CHAT_MODEL,
+                model="gpt-3.5-turbo",
                 messages=messages,
                 temperature=0.7
             )
