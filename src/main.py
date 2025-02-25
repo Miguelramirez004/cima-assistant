@@ -1,6 +1,6 @@
 import streamlit as st
 import asyncio
-import openai
+from openai import AsyncOpenAI
 import re
 import os
 from datetime import datetime
@@ -8,15 +8,16 @@ from datetime import datetime
 # Import agent modules
 from formulacion import FormulationAgent, CIMAExpertAgent
 from config import Config
+from openai_client import create_async_openai_client
 
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
 def init_agents():
-    # Initialize OpenAI client
-    openai.api_key = Config.OPENAI_API_KEY
+    # Initialize OpenAI client for v1.3.0
+    openai_client = create_async_openai_client(api_key=Config.OPENAI_API_KEY)
     
-    # Use the older API pattern for OpenAI
-    return FormulationAgent(openai), CIMAExpertAgent(openai)
+    # Pass the client instance, not the module
+    return FormulationAgent(openai_client), CIMAExpertAgent(openai_client)
 
 # Custom CSS with just the essential styling
 st.markdown("""
