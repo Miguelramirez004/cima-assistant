@@ -85,6 +85,55 @@ Para cada sección, incluye referencias específicas a las fuentes CIMA utilizad
 Si hay información insuficiente para alguna sección, indícalo claramente y sugiere fuentes adicionales que podrían consultarse.
 """
 
+    prospecto_prompt = """Experto en redacción de prospectos de medicamentos según normativa AEMPS.
+
+Cuando se solicite redactar un prospecto completo, deberás generar un documento que cumpla con todos los requisitos oficiales de la AEMPS para prospectos de medicamentos, incluyendo:
+
+1. DENOMINACIÓN DEL MEDICAMENTO
+   - Nombre completo con forma farmacéutica y concentración
+
+2. COMPOSICIÓN CUALITATIVA Y CUANTITATIVA
+   - Principios activos y excipientes con declaración obligatoria
+
+3. QUÉ ES Y PARA QUÉ SE UTILIZA
+   - Descripción en lenguaje comprensible para el paciente
+   - Grupo farmacoterapéutico
+   - Indicaciones terapéuticas aprobadas
+
+4. ANTES DE TOMAR EL MEDICAMENTO
+   - Contraindicaciones
+   - Advertencias y precauciones
+   - Interacciones con otros medicamentos
+   - Uso durante embarazo y lactancia
+   - Efectos sobre la capacidad de conducir
+   - Información importante sobre excipientes
+
+5. CÓMO TOMAR EL MEDICAMENTO
+   - Posología detallada para cada indicación
+   - Forma de administración
+   - Duración del tratamiento
+   - Instrucciones en caso de sobredosis o dosis olvidadas
+
+6. POSIBLES EFECTOS ADVERSOS
+   - Clasificados por frecuencia según MedDRA
+   - Agrupados por sistemas orgánicos
+   - Instrucciones al paciente en caso de efectos adversos
+
+7. CONSERVACIÓN
+   - Condiciones específicas de temperatura y humedad
+   - Periodo de validez
+   - Precauciones especiales de conservación
+
+8. INFORMACIÓN ADICIONAL
+   - Titular de la autorización y responsable de fabricación
+   - Fecha de última revisión
+   - Instrucciones para eliminación
+
+Utiliza un lenguaje claro, comprensible para el paciente medio sin conocimientos médicos. Estructura el texto con encabezados numerados. Evita terminología técnica innecesaria pero mantén la precisión científica.
+
+Basa toda la información en los datos proporcionados en el contexto CIMA, citando apropiadamente las fuentes con el formato [Ref X: Nombre del medicamento (Nº Registro)].
+"""
+
     async def get_session(self):
         """Get or create an aiohttp session with keepalive"""
         if self.session is None or self.session.closed:
@@ -99,10 +148,12 @@ Si hay información insuficiente para alguna sección, indícalo claramente y su
         return self.session
     
     async def get_medication_details(self, nregistro: str) -> Dict:
-        """Optimized method to fetch medication details with concurrent requests"""
+        """Optimized method to fetch all medication details concurrently"""
         session = await self.get_session()
         sections_of_interest = {
+            "1": "nombre",
             "2": "composicion",
+            "3": "forma_farmaceutica",
             "4.1": "indicaciones",
             "4.2": "posologia_procedimiento",
             "4.3": "contraindicaciones",
@@ -112,11 +163,17 @@ Si hay información insuficiente para alguna sección, indícalo claramente y su
             "4.8": "efectos_adversos",
             "5.1": "propiedades_farmacodinamicas",
             "5.2": "propiedades_farmacocineticas",
+            "5.3": "datos_preclinicos",
             "6.1": "excipientes",
+            "6.2": "incompatibilidades",
             "6.3": "conservacion",
             "6.4": "especificaciones",
             "6.5": "envase",
-            "6.6": "eliminacion"
+            "6.6": "eliminacion",
+            "7": "titular_autorizacion",
+            "8": "numero_autorizacion",
+            "9": "fecha_autorizacion",
+            "10": "fecha_revision"
         }
         
         details = {}
@@ -160,6 +217,42 @@ Si hay información insuficiente para alguna sección, indícalo claramente y su
             except Exception as e:
                 print(f"Error retrieving images: {str(e)}")
             return {"error": "Unable to retrieve images"}
+            
+        async def get_laboratorio():
+            url = f"{self.base_url}/medicamento/laboratorios"
+            try:
+                async with session.get(url, params={"nregistro": nregistro}) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if isinstance(result, dict) or isinstance(result, list):
+                            return {"laboratorios": result}
+            except Exception as e:
+                print(f"Error retrieving labs: {str(e)}")
+            return {"error": "Unable to retrieve laboratory information"}
+            
+        async def get_presentaciones():
+            url = f"{self.base_url}/presentaciones"
+            try:
+                async with session.get(url, params={"nregistro": nregistro}) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if isinstance(result, dict) and "resultados" in result:
+                            return {"presentaciones": result["resultados"]}
+            except Exception as e:
+                print(f"Error retrieving presentations: {str(e)}")
+            return {"error": "Unable to retrieve presentations"}
+            
+        async def get_prospecto():
+            url = f"{self.base_url}/medicamento/prospecto"
+            try:
+                async with session.get(url, params={"nregistro": nregistro}) as response:
+                    if response.status == 200:
+                        result = await response.text()
+                        if result:
+                            return {"prospecto": result}
+            except Exception as e:
+                print(f"Error retrieving prospecto: {str(e)}")
+            return {"error": "Unable to retrieve prospecto"}
         
         # Execute basic info request first - we need this for sure
         basic_info = await get_basic_info()
@@ -167,8 +260,8 @@ Si hay información insuficiente para alguna sección, indícalo claramente y su
         
         # Only fetch sections if we got basic info successfully
         if "error" not in basic_info:
-            # Limit concurrent section requests to avoid overwhelming the API
-            semaphore = asyncio.Semaphore(5)  # Max 5 concurrent requests
+            # Limit concurrent section requests to avoid overwhelming the API while still getting all data
+            semaphore = asyncio.Semaphore(10)  # Increased to 10 for more concurrency
             
             async def limited_section_fetch(section, key):
                 async with semaphore:
@@ -182,8 +275,19 @@ Si hay información insuficiente para alguna sección, indícalo claramente y su
             for key, value in section_results:
                 details[key] = value
             
-            # Get images as a separate task
-            details["imagenes"] = await get_images()
+            # Get additional information concurrently
+            additional_tasks = [
+                get_images(),
+                get_laboratorio(),
+                get_presentaciones(),
+                get_prospecto()
+            ]
+            
+            additional_results = await asyncio.gather(*additional_tasks)
+            details["imagenes"] = additional_results[0]
+            details["laboratorios"] = additional_results[1]
+            details["presentaciones"] = additional_results[2]
+            details["prospecto"] = additional_results[3]
         
         return details
 
@@ -200,8 +304,14 @@ Si hay información insuficiente para alguna sección, indícalo claramente y su
         # Concentration patterns
         concentration_pattern = r'(\d+(?:[,.]\d+)?)\s*(%|mg|g|ml|mcg|UI|unidades)'
         
+        # Special request patterns
+        prospecto_pattern = r'(?:redactar|generar|crear|elaborar|realizar)\s+(?:un|el)?\s+prospecto'
+        
         # Process query
         query_lower = query.lower()
+        
+        # Detect if this is a special request for a prospecto
+        is_prospecto = bool(re.search(prospecto_pattern, query_lower))
         
         # Detect formulation type
         detected_form = "suspension"  # Default
@@ -235,12 +345,13 @@ Si hay información insuficiente para alguna sección, indícalo claramente y su
             "form_type": detected_form,
             "admin_route": detected_route,
             "concentration": concentration,
-            "active_principle": active_principle
+            "active_principle": active_principle,
+            "is_prospecto": is_prospecto
         }
 
     def format_medication_info(self, index: int, med: Dict, details: Dict) -> str:
         """
-        Enhanced medication information formatting with more detailed structure
+        Complete medication information formatting with full context
         """
         # Basic medication info - with safe access
         basic_info = details.get('basic', {})
@@ -267,14 +378,9 @@ Si hay información insuficiente para alguna sección, indícalo claramente y su
             section_data = details.get(section_key, {})
             if not isinstance(section_data, dict):
                 return "No disponible"
-            
-            # Limit content length to reduce context size
-            content = section_data.get('contenido', 'No disponible')
-            if len(content) > 500:  # Truncate very long sections
-                return content[:497] + "..."
-            return content
+            return section_data.get('contenido', 'No disponible')
         
-        # Construct a more compact formatted reference to reduce context size
+        # Include all available sections for comprehensive context
         reference = f"""
 [Referencia {index}: {med_name} (Nº Registro: {nregistro})]
 
@@ -282,13 +388,17 @@ INFORMACIÓN BÁSICA:
 - Nombre: {med_name}
 - Número de registro: {nregistro}
 - Laboratorio titular: {lab_titular}
+- Fecha de autorización: {fecha_autorizacion}
 - Principios activos: {med.get('pactivos', 'No disponible')}
+
+NOMBRE:
+{get_section_content('nombre')}
 
 COMPOSICIÓN:
 {get_section_content('composicion')}
 
-EXCIPIENTES:
-{get_section_content('excipientes')}
+FORMA FARMACÉUTICA:
+{get_section_content('forma_farmaceutica')}
 
 INDICACIONES TERAPÉUTICAS:
 {get_section_content('indicaciones')}
@@ -296,20 +406,71 @@ INDICACIONES TERAPÉUTICAS:
 POSOLOGÍA Y ADMINISTRACIÓN:
 {get_section_content('posologia_procedimiento')}
 
+CONTRAINDICACIONES:
+{get_section_content('contraindicaciones')}
+
 ADVERTENCIAS Y PRECAUCIONES:
 {get_section_content('advertencias')}
 
+INTERACCIONES:
+{get_section_content('interacciones')}
+
+EMBARAZO Y LACTANCIA:
+{get_section_content('embarazo_lactancia')}
+
+EFECTOS ADVERSOS:
+{get_section_content('efectos_adversos')}
+
+PROPIEDADES FARMACODINÁMICAS:
+{get_section_content('propiedades_farmacodinamicas')}
+
+PROPIEDADES FARMACOCINÉTICAS:
+{get_section_content('propiedades_farmacocineticas')}
+
+DATOS PRECLÍNICOS:
+{get_section_content('datos_preclinicos')}
+
+EXCIPIENTES:
+{get_section_content('excipientes')}
+
+INCOMPATIBILIDADES:
+{get_section_content('incompatibilidades')}
+
+CONSERVACIÓN:
+{get_section_content('conservacion')}
+
+ESPECIFICACIONES:
+{get_section_content('especificaciones')}
+
+ENVASE:
+{get_section_content('envase')}
+
+ELIMINACIÓN:
+{get_section_content('eliminacion')}
+
+TITULAR DE AUTORIZACIÓN:
+{get_section_content('titular_autorizacion')}
+
+NÚMERO DE AUTORIZACIÓN:
+{get_section_content('numero_autorizacion')}
+
+FECHA DE AUTORIZACIÓN:
+{get_section_content('fecha_autorizacion')}
+
+FECHA DE REVISIÓN:
+{get_section_content('fecha_revision')}
+
 URL FICHA TÉCNICA:
 https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
+
+URL PROSPECTO:
+https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
 """
-        # Removed several less critical sections to reduce context size
         return reference
 
-    async def get_relevant_context(self, query: str, n_results: int = 3) -> str:
+    async def get_relevant_context(self, query: str, n_results: int = 5) -> str:
         """
-        Optimized context retrieval with more efficient search and error handling
-        - Reduced n_results default from 5 to 3 to improve performance
-        - Added concurrent search processing
+        Enhanced context retrieval that gets all possible information
         """
         cache_key = f"{query}_{n_results}"
         
@@ -328,60 +489,66 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
         session = await self.get_session()
         search_url = f"{self.base_url}/medicamentos"
         
+        # Define comprehensive search strategies that get EVERYTHING relevant
+        search_strategies = [
+            # Try exact match first
+            {"params": {"nombre": query}, "priority": 1},
+            # Search by active principle
+            {"params": {"principiosActivos": active_principle}, "priority": 2},
+            # Search by pharmaceutical form
+            {"params": {"formaFarmaceutica": formulation_type}, "priority": 3},
+        ]
+        
+        # Add any additional terms that might be relevant
+        terms = self._extract_search_terms(query)
+        for term in terms:
+            if term != query and term != active_principle:
+                search_strategies.append({
+                    "params": {"nombre": term}, 
+                    "priority": 4
+                })
+        
         # Perform searches concurrently
-        async def search_medications(params):
+        async def search_medications(params, priority):
             try:
                 async with session.get(search_url, params=params) as response:
                     if response.status == 200:
                         data = await response.json()
                         if isinstance(data, dict) and "resultados" in data:
-                            return data.get("resultados", [])
+                            results = data.get("resultados", [])
+                            return {"results": results, "priority": priority}
             except Exception as e:
                 print(f"Error in search with params {params}: {str(e)}")
-            return []
+            return {"results": [], "priority": priority}
         
-        # Define all search strategies
-        search_params = [
-            {"nombre": active_principle},
-            {"principiosActivos": active_principle},
-            {"formaFarmaceutica": formulation_type}
-        ]
+        # Execute all searches concurrently
+        search_tasks = [search_medications(strategy["params"], strategy["priority"]) 
+                         for strategy in search_strategies]
         
-        # Execute searches concurrently
-        search_results = await asyncio.gather(*(search_medications(params) for params in search_params))
+        search_results = await asyncio.gather(*search_tasks)
         
-        # Combine results while removing duplicates
+        # Combine results with prioritization
         all_results = []
         seen_nregistros = set()
         
-        for results in search_results:
-            for med in results:
-                if isinstance(med, dict) and med.get("nregistro"):
-                    nregistro = med.get("nregistro")
-                    if nregistro not in seen_nregistros:
-                        seen_nregistros.add(nregistro)
-                        all_results.append(med)
+        # First add results from high priority searches
+        for priority in range(1, 5):  # Process in priority order
+            for result_set in search_results:
+                if result_set["priority"] == priority:
+                    for med in result_set["results"]:
+                        if isinstance(med, dict) and med.get("nregistro"):
+                            nregistro = med.get("nregistro")
+                            if nregistro not in seen_nregistros:
+                                seen_nregistros.add(nregistro)
+                                all_results.append(med)
         
-        # Fallback if no results found
-        if not all_results:
-            # Try a more generic search
-            first_word = query.split()[0] if query.split() else ""
-            if len(first_word) > 3:
-                fallback_results = await search_medications({"nombre": first_word})
-                for med in fallback_results:
-                    if isinstance(med, dict) and med.get("nregistro"):
-                        nregistro = med.get("nregistro")
-                        if nregistro not in seen_nregistros:
-                            seen_nregistros.add(nregistro)
-                            all_results.append(med)
-        
-        # Limit results
+        # Limit results to requested number
         results = all_results[:n_results]
         cached_results = []
 
         if results:
-            # Fetch details for each medication concurrently
-            semaphore = asyncio.Semaphore(3)  # Limit concurrent API calls to 3
+            # Fetch details for all medications concurrently with higher concurrency
+            semaphore = asyncio.Semaphore(5)  # Allow 5 concurrent detail fetches
             
             async def fetch_med_details(med):
                 async with semaphore:
@@ -400,7 +567,7 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
             # Store in cache
             self.reference_cache[cache_key] = cached_results
             
-            # Format context, with reduced context size
+            # Format context with complete information
             context = [self.format_medication_info(i, med, details) 
                       for i, (med, details) in enumerate(cached_results, 1)]
             
@@ -408,40 +575,74 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
         
         return "No se encontraron resultados relevantes."
 
+    def _extract_search_terms(self, query: str) -> List[str]:
+        """Extract potential search terms from the query"""
+        # Patterns for potential medication names and active ingredients
+        patterns = [
+            r'([A-Z][a-záéíóúñ]+(?:\s[a-záéíóúñ]+){0,3})',  # Capitalized words
+            r'(\d+(?:\.\d+)?\s*(?:mg|g|ml|mcg|UI|unidades))',  # Dosages
+            r'([A-Za-záéíóúñ]+\+[A-Za-záéíóúñ]+)'  # Combinations with +
+        ]
+        
+        # Extract terms using all patterns
+        potential_terms = []
+        for pattern in patterns:
+            matches = re.findall(pattern, query)
+            potential_terms.extend([m.strip() for m in matches if len(m.strip()) > 3])
+        
+        # Add individual words that might be medication names
+        words = query.split()
+        for word in words:
+            if len(word) > 4 and word not in potential_terms:
+                potential_terms.append(word)
+        
+        # Add bi-grams (pairs of words)
+        for i in range(len(words) - 1):
+            if len(words[i]) > 3 and len(words[i+1]) > 3:
+                bigram = f"{words[i]} {words[i+1]}"
+                if bigram not in potential_terms:
+                    potential_terms.append(bigram)
+        
+        # Eliminate duplicates
+        return list(set(potential_terms))
+
     async def generate_response(self, query: str, context: str) -> str:
         """
-        Enhanced response generation with performance optimizations
+        Generate response with selected system prompt based on query type
         """
         # Extract formulation details for improved prompting
         formulation_info = self.detect_formulation_type(query)
         
-        # Streamlined prompt
+        # Select the appropriate system prompt based on query type
+        system_prompt = self.prospecto_prompt if formulation_info["is_prospecto"] else self.system_prompt
+        
+        # Create prompt with complete context
         prompt = f"""
-Analiza el siguiente contexto para generar una formulación magistral detallada:
+Analiza el siguiente contexto para generar una respuesta detallada:
 
 CONTEXTO:
 {context}
 
-DETALLES DE LA FORMULACIÓN SOLICITADA:
+DETALLES DE LA CONSULTA:
 - Tipo de formulación: {formulation_info["form_type"]}
 - Vía de administración: {formulation_info["admin_route"]}
 - Principio(s) activo(s): {formulation_info["active_principle"]}
 - Concentración solicitada: {formulation_info["concentration"] if formulation_info["concentration"] else "No especificada"}
+- Es solicitud de prospecto: {"Sí" if formulation_info["is_prospecto"] else "No"}
 
 CONSULTA ORIGINAL:
 {query}
 
-Por favor, genera una formulación magistral completa siguiendo la estructura indicada en las instrucciones del sistema. Cita las fuentes CIMA usando el formato [Ref X: Nombre del medicamento (Nº Registro)].
+Genera una respuesta completa y exhaustiva utilizando toda la información disponible en el contexto. Cita las fuentes CIMA usando el formato [Ref X: Nombre del medicamento (Nº Registro)].
 """
 
-        # Use a lower temperature for faster response
         response = await self.openai_client.chat.completions.create(
             model=Config.CHAT_MODEL,
             messages=[
-                {"role": "system", "content": self.system_prompt},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.5  # Lower temperature for faster processing
+            temperature=0.7
         )
         return response.choices[0].message.content
 
@@ -524,151 +725,191 @@ Recuerda que tus respuestas pueden tener impacto en decisiones de salud, así qu
 
     async def get_medication_info(self, query: str) -> str:
         """
-        Optimized implementation for obtaining medication information using multiple endpoints
+        Full implementation for obtaining complete medication information without sacrificing coverage
         """
         cache_key = f"query_{query}"
         if cache_key in self.reference_cache:
             return self.reference_cache[cache_key]
 
-        # Extract search terms more efficiently
+        # Extract all potential search terms
         potential_terms = self._extract_search_terms(query)
         
         # Get the session
         session = await self.get_session()
         
-        # Perform searches concurrently for better performance
-        tasks = []
+        # Track already processed medications to avoid duplicates
+        processed_nregistros = set()
+        all_med_info = []
         
-        # 1. Direct name search
-        tasks.append(self._search_medications_by_name(session, query))
+        # 1. First search with the direct query
+        meds = await self._search_medications(session, query)
+        for med in meds[:5]:  # Limit to 5 results per search term
+            if med.get("nregistro") not in processed_nregistros:
+                processed_nregistros.add(med.get("nregistro"))
+                med_info = await self._get_complete_medication_details(session, med)
+                if med_info:
+                    all_med_info.append(med_info)
         
-        # 2. Search by extracted terms - limit to first 2 terms for performance
-        for term in potential_terms[:2]:
-            if term.lower() != query.lower():  # Avoid duplicate searches
-                tasks.append(self._search_medications_by_name(session, term))
+        # 2. If we need more results, search by extracted terms
+        if len(all_med_info) < 5:
+            for term in potential_terms:
+                if term.lower() != query.lower():  # Avoid duplicate searches
+                    term_meds = await self._search_medications(session, term)
+                    for med in term_meds[:3]:  # Limit per term
+                        if med.get("nregistro") not in processed_nregistros:
+                            processed_nregistros.add(med.get("nregistro"))
+                            med_info = await self._get_complete_medication_details(session, med)
+                            if med_info:
+                                all_med_info.append(med_info)
+                                
+                    # Limit total results to manage context size
+                    if len(all_med_info) >= 5:
+                        break
         
-        # Execute all searches concurrently
-        results = await asyncio.gather(*tasks)
+        # 3. Search in technical files as a last resort
+        if len(all_med_info) < 3:  # If we still need more results
+            ft_meds = await self._search_in_ficha_tecnica(session, query)
+            for med in ft_meds:
+                if med.get("nregistro") not in processed_nregistros:
+                    processed_nregistros.add(med.get("nregistro"))
+                    med_info = await self._get_complete_medication_details(session, med)
+                    if med_info:
+                        all_med_info.append(med_info)
         
-        # Filter out empty results and combine
-        all_results = [r for r in results if r]
-        
-        # Add ficha técnica search only if needed
-        if len(all_results) < 2:
-            ft_results = await self._search_in_ficha_tecnica(session, query)
-            if ft_results:
-                all_results.append(ft_results)
-        
-        # Combine results
-        combined_results = "\n\n".join(all_results)
-        
-        # Truncate if too large to improve response time
-        if len(combined_results) > 10000:
-            combined_results = combined_results[:10000] + "\n\n[Resultados truncados por longitud]"
+        # Combine all results
+        combined_results = "\n\n".join(all_med_info)
         
         self.reference_cache[cache_key] = combined_results
         return combined_results
 
     def _extract_search_terms(self, query: str) -> List[str]:
         """
-        Extrae términos de búsqueda potenciales del query del usuario - optimizado
+        Extract all possible search terms from the query
         """
-        # Patrones para nombres de medicamentos y principios activos
+        # Patterns for different types of potential search terms
         patterns = [
-            r'([A-Z][a-záéíóúñ]+(?:\s[a-záéíóúñ]+){0,3})',  # Palabras capitalizadas
-            r'(\d+(?:\.\d+)?\s*(?:mg|g|ml|mcg|UI|unidades))',  # Dosificaciones
-            r'([A-Za-záéíóúñ]+\+[A-Za-záéíóúñ]+)'  # Combinaciones con +
+            r'([A-Z][a-záéíóúñ]+(?:\s[a-záéíóúñ]+){0,3})',  # Capitalized words
+            r'(\d+(?:\.\d+)?\s*(?:mg|g|ml|mcg|UI|unidades))',  # Dosages
+            r'([A-Za-záéíóúñ]+\+[A-Za-záéíóúñ]+)'  # Combinations with +
         ]
         
-        # Lista de palabras clave comunes que pueden indicar medicamentos
-        keywords = [
-            "medicamento", "fármaco", "principio activo", "comprimido", "pastilla", 
-            "cápsula", "jarabe", "solución", "inyectable", "pomada", "crema", "gel"
-        ]
+        # List of common stopwords to filter out
+        stopwords = ["sobre", "para", "como", "este", "esta", "estos", "estas", "cual", "cuales"]
         
-        # Extraer usando patrones
+        # Extract using patterns
         potential_terms = []
         for pattern in patterns:
             matches = re.findall(pattern, query)
             potential_terms.extend([m.strip() for m in matches if len(m.strip()) > 3])
         
-        # Extraer palabras potencialmente relevantes de forma más eficiente
+        # Extract individual words
         words = query.split()
-        for i in range(len(words)):
-            # Palabras individuales que son largas y no son comunes
-            if len(words[i]) > 4 and words[i].lower() not in keywords:
-                potential_terms.append(words[i])
-            
-            # Bi-gramas (pares de palabras) - solo los primeros para mejorar rendimiento
-            if i < len(words) - 1 and i < 3 and len(words[i]) > 3 and len(words[i+1]) > 3:
-                potential_terms.append(f"{words[i]} {words[i+1]}")
+        for word in words:
+            if len(word) > 4 and word.lower() not in stopwords:
+                potential_terms.append(word)
         
-        # Eliminar duplicados y retornar lista de términos potenciales (limitada a 5)
+        # Add bi-grams (pairs of words)
+        for i in range(len(words) - 1):
+            if len(words[i]) > 3 and len(words[i+1]) > 3:
+                bigram = f"{words[i]} {words[i+1]}"
+                potential_terms.append(bigram)
+        
+        # Extract medication categories and conditions
+        categories = [
+            "analgésico", "antibiótico", "antiinflamatorio", "antidepresivo", 
+            "ansiolítico", "antihistamínico", "antihipertensivo", "hipnótico",
+            "antiácido", "anticoagulante", "antidiabético", "antipsicótico",
+            "corticoide", "diurético", "laxante", "mucolítico"
+        ]
+        
+        conditions = [
+            "hipertensión", "diabetes", "asma", "ansiedad", "depresión",
+            "dolor", "infección", "alergia", "insomnio", "artritis",
+            "migraña", "úlcera", "reflujo", "colesterol", "epilepsia"
+        ]
+        
+        # Add any matching categories and conditions
+        query_lower = query.lower()
+        for term in categories + conditions:
+            if term in query_lower:
+                potential_terms.append(term)
+        
+        # Remove duplicates
         seen = set()
-        return [x for x in potential_terms if x.lower() not in seen and not seen.add(x.lower())][:5]
+        return [x for x in potential_terms if x.lower() not in seen and not seen.add(x.lower())]
 
-    async def _search_medications_by_name(self, session, query: str) -> str:
+    async def _search_medications(self, session, query: str) -> List[Dict]:
         """
-        Busca medicamentos por nombre - versión optimizada
+        Search medications with multiple strategies
         """
         search_url = f"{self.base_url}/medicamentos"
-        results = []
+        all_results = []
         
-        # Semaphore to limit concurrent detail fetches
-        detail_semaphore = asyncio.Semaphore(3)
+        # Search strategies in order of relevance
+        search_strategies = [
+            {"params": {"nombre": query}},
+            {"params": {"practiv1": query}},
+            {"params": {"atc": query}}
+        ]
         
-        # Create task for search by name
-        async def search_by_params(params):
+        # Execute searches concurrently
+        async def execute_search(params):
             try:
                 async with session.get(search_url, params=params) as response:
                     if response.status == 200:
                         data = await response.json()
                         if isinstance(data, dict) and "resultados" in data:
-                            return data.get("resultados", [])[:3]  # Limit to top 3 results
+                            return data.get("resultados", [])
             except Exception as e:
-                print(f"Error en búsqueda con parámetros {params}: {str(e)}")
+                print(f"Error in medication search: {str(e)}")
             return []
         
-        # Execute search by name
-        meds = await search_by_params({"nombre": query})
+        # Run all searches concurrently
+        search_tasks = [execute_search(strategy["params"]) for strategy in search_strategies]
+        search_results = await asyncio.gather(*search_tasks)
         
-        # If no results, try search by active ingredient
-        if not meds:
-            meds = await search_by_params({"practiv1": query})
+        # Combine results, avoiding duplicates
+        seen_nregistros = set()
         
-        # If still no results, try partial search
-        if not meds and len(query) > 4:
-            partial_query = query[:4]
-            meds = await search_by_params({"nombre": partial_query})
-        
-        # Limit to top 3 medications for better performance
-        meds = meds[:3]
-        
-        # Function to fetch medication details with semaphore
-        async def fetch_med_details(med):
-            async with detail_semaphore:
+        for results in search_results:
+            for med in results:
                 if isinstance(med, dict) and med.get("nregistro"):
-                    return await self._get_reduced_medication_details(session, med)
-            return None
+                    nregistro = med.get("nregistro")
+                    if nregistro not in seen_nregistros:
+                        seen_nregistros.add(nregistro)
+                        all_results.append(med)
         
-        # Fetch details concurrently
-        if meds:
-            detail_tasks = [fetch_med_details(med) for med in meds]
-            detail_results = await asyncio.gather(*detail_tasks)
-            results = [r for r in detail_results if r]
+        # If no results and query is longer than 4 chars, try partial match
+        if not all_results and len(query) > 4:
+            partial_query = query[:4]
+            partial_results = await execute_search({"nombre": partial_query})
+            
+            for med in partial_results:
+                if isinstance(med, dict) and med.get("nregistro"):
+                    nregistro = med.get("nregistro")
+                    if nregistro not in seen_nregistros:
+                        seen_nregistros.add(nregistro)
+                        all_results.append(med)
         
-        return "\n\n".join(results) if results else ""
+        return all_results
 
-    async def _search_in_ficha_tecnica(self, session, query: str) -> str:
+    async def _search_in_ficha_tecnica(self, session, query: str) -> List[Dict]:
         """
-        Busca en fichas técnicas - versión optimizada
+        Search in technical files for more comprehensive results
         """
         results = []
         search_url = f"{self.base_url}/buscarEnFichaTecnica"
         
-        # Limitar secciones y palabras para mejor rendimiento
-        sections = ["4.1", "4.2"]  # Reducir secciones a las más importantes
-        words = [word for word in query.split() if len(word) > 3][:2]  # Limitar a primeras 2 palabras relevantes
+        # Important sections in ficha técnica for comprehensive search
+        sections = ["4.1", "4.2", "4.3", "4.4", "5.1"]
+        
+        # Extract key words for search
+        words = [word for word in query.split() if len(word) > 3]
+        if not words:
+            return []
+            
+        # Limit to 3 words for performance
+        words = words[:3]
         
         search_body = []
         for section in sections:
@@ -679,134 +920,173 @@ Recuerda que tus respuestas pueden tener impacto en decisiones de salud, así qu
                     "contiene": 1
                 })
         
-        if not search_body:
-            return ""
-        
         try:
             async with session.post(search_url, json=search_body) as response:
                 if response.status == 200:
                     data = await response.json()
                     if isinstance(data, dict) and "resultados" in data:
-                        meds = data.get("resultados", [])[:2]  # Limitar a 2 resultados
-                        
-                        # Semaphore for detail fetches
-                        detail_semaphore = asyncio.Semaphore(2)
-                        
-                        async def fetch_med_details(med):
-                            async with detail_semaphore:
-                                if isinstance(med, dict) and med.get("nregistro"):
-                                    return await self._get_reduced_medication_details(session, med)
-                            return None
-                        
-                        detail_tasks = [fetch_med_details(med) for med in meds]
-                        detail_results = await asyncio.gather(*detail_tasks)
-                        results = [r for r in detail_results if r]
+                        results = data.get("resultados", [])
         except Exception as e:
-            print(f"Error en búsqueda en ficha técnica: {str(e)}")
+            print(f"Error in ficha técnica search: {str(e)}")
         
-        return "\n\n".join(results) if results else ""
+        return results
 
-    async def _get_reduced_medication_details(self, session, med: Dict) -> str:
+    async def _get_complete_medication_details(self, session, med: Dict) -> str:
         """
-        Obtiene un conjunto reducido de detalles clave del medicamento para mejor rendimiento
+        Get comprehensive details for a medication
         """
-        if not isinstance(med, dict):
+        if not isinstance(med, dict) or not med.get("nregistro"):
             return ""
         
         nregistro = med.get("nregistro")
-        if not nregistro:
-            return ""
         
-        # 1. Información básica del medicamento
-        basic_info = {}
-        detail_url = f"{self.base_url}/medicamento"
+        # Track all API calls to make concurrently
+        api_tasks = []
         
-        try:
-            async with session.get(detail_url, params={"nregistro": nregistro}) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    if isinstance(result, dict):
-                        basic_info = result
-        except Exception as e:
-            print(f"Error obteniendo información básica para {nregistro}: {str(e)}")
-            return ""
+        # 1. Basic information
+        async def get_basic_info():
+            try:
+                url = f"{self.base_url}/medicamento"
+                async with session.get(url, params={"nregistro": nregistro}) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if isinstance(result, dict):
+                            return {"type": "basic", "data": result}
+            except Exception as e:
+                print(f"Error getting basic info: {str(e)}")
+            return {"type": "basic", "data": {}}
         
-        # 2. Información de secciones clave (reducidas para mejor rendimiento)
+        api_tasks.append(get_basic_info())
+        
+        # 2. Technical sections
         key_sections = {
             "4.1": "indicaciones",
             "4.2": "posologia",
             "4.3": "contraindicaciones",
-            "4.8": "efectos_adversos"
+            "4.4": "advertencias",
+            "4.5": "interacciones",
+            "4.6": "embarazo_lactancia",
+            "4.8": "efectos_adversos",
+            "5.1": "propiedades_farmacodinamicas",
+            "5.2": "propiedades_farmacocineticas",
+            "6.1": "excipientes"
         }
         
-        sections_data = {}
-        
-        # Fetch sections concurrently
-        async def fetch_section(section, key):
+        async def get_section(section, key):
             try:
                 section_url = f"{self.base_url}/docSegmentado/contenido/1"
                 async with session.get(section_url, params={"nregistro": nregistro, "seccion": section}) as response:
                     if response.status == 200:
                         result = await response.json()
                         if isinstance(result, dict) and "contenido" in result:
-                            content = result.get("contenido", "")
-                            # Truncate long content
-                            if len(content) > 500:
-                                content = content[:497] + "..."
-                            return (key, content)
+                            return {"type": "section", "key": key, "data": result.get("contenido", "")}
             except Exception as e:
-                print(f"Error obteniendo sección {section} para {nregistro}: {str(e)}")
-            return (key, "No disponible")
+                print(f"Error getting section {section}: {str(e)}")
+            return {"type": "section", "key": key, "data": "No disponible"}
         
-        section_tasks = [fetch_section(section, key) for section, key in key_sections.items()]
-        section_results = await asyncio.gather(*section_tasks)
+        for section, key in key_sections.items():
+            api_tasks.append(get_section(section, key))
         
-        for key, content in section_results:
-            sections_data[key] = content
+        # 3. Presentations
+        async def get_presentations():
+            try:
+                url = f"{self.base_url}/presentaciones"
+                async with session.get(url, params={"nregistro": nregistro}) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if isinstance(result, dict) and "resultados" in result:
+                            return {"type": "presentations", "data": result.get("resultados", [])}
+            except Exception as e:
+                print(f"Error getting presentations: {str(e)}")
+            return {"type": "presentations", "data": []}
         
-        # Formatear la información de forma reducida
+        api_tasks.append(get_presentations())
+        
+        # Execute all API calls concurrently
+        api_results = await asyncio.gather(*api_tasks)
+        
+        # Process results
+        basic_info = {}
+        sections_data = {}
+        presentations = []
+        
+        for result in api_results:
+            if result["type"] == "basic":
+                basic_info = result["data"]
+            elif result["type"] == "section":
+                sections_data[result["key"]] = result["data"]
+            elif result["type"] == "presentations":
+                presentations = result["data"]
+        
+        # Format into a comprehensive text description
+        return self._format_medication_details_text(med, basic_info, sections_data, presentations, nregistro)
+        
+    def _format_medication_details_text(self, med, basic_info, sections_data, presentations, nregistro):
+        """Format all medication details into comprehensive text"""
+        # Basic details
         name = med.get("nombre", basic_info.get("nombre", "No disponible"))
         pactivos = med.get("pactivos", basic_info.get("pactivos", "No disponible"))
         lab = basic_info.get("labtitular", "No disponible")
         
-        # URL de la ficha técnica
+        # URL of the technical data sheet
         ficha_url = f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html"
         
-        # Construir un bloque de información más compacto
-        info_block = [
+        # Build the information block
+        info_parts = [
             f"[Ref: {name} (Nº Registro: {nregistro})]",
             f"Nombre: {name}",
             f"Principios activos: {pactivos}",
             f"Laboratorio: {lab}"
         ]
         
-        # Añadir secciones clave
-        if sections_data.get("indicaciones"):
-            info_block.append(f"INDICACIONES:\n{sections_data['indicaciones']}")
+        # Add authorization state
+        estado = basic_info.get("estado", {})
+        if isinstance(estado, dict):
+            if "aut" in estado:
+                info_parts.append(f"Fecha autorización: {self._format_date(estado.get('aut'))}")
+            if "susp" in estado:
+                info_parts.append(f"Fecha suspensión: {self._format_date(estado.get('susp'))}")
+            if "rev" in estado:
+                info_parts.append(f"Fecha revocación: {self._format_date(estado.get('rev'))}")
         
-        if sections_data.get("posologia"):
-            info_block.append(f"POSOLOGÍA:\n{sections_data['posologia']}")
+        # Add all section information
+        for key, title in {
+            "indicaciones": "INDICACIONES TERAPÉUTICAS",
+            "posologia": "POSOLOGÍA Y FORMA DE ADMINISTRACIÓN",
+            "contraindicaciones": "CONTRAINDICACIONES",
+            "advertencias": "ADVERTENCIAS Y PRECAUCIONES",
+            "interacciones": "INTERACCIONES",
+            "embarazo_lactancia": "EMBARAZO Y LACTANCIA",
+            "efectos_adversos": "EFECTOS ADVERSOS",
+            "propiedades_farmacodinamicas": "PROPIEDADES FARMACODINÁMICAS",
+            "propiedades_farmacocineticas": "PROPIEDADES FARMACOCINÉTICAS",
+            "excipientes": "EXCIPIENTES"
+        }.items():
+            content = sections_data.get(key, "")
+            if content and len(content.strip()) > 0:
+                info_parts.append(f"{title}:\n{content}")
         
-        if sections_data.get("contraindicaciones"):
-            info_block.append(f"CONTRAINDICACIONES:\n{sections_data['contraindicaciones']}")
+        # Add presentations
+        if presentations:
+            info_parts.append("PRESENTACIONES:")
+            for i, pres in enumerate(presentations[:3], 1):
+                cn = pres.get("cn", "")
+                nombre_pres = pres.get("nombre", "")
+                estado_pres = "Comercializada" if pres.get("comerc") else "No comercializada"
+                info_parts.append(f"{i}. CN: {cn} - {nombre_pres} - {estado_pres}")
         
-        if sections_data.get("efectos_adversos"):
-            info_block.append(f"EFECTOS ADVERSOS:\n{sections_data['efectos_adversos']}")
+        # Add link to technical data sheet
+        info_parts.append(f"Ficha técnica completa: {ficha_url}")
         
-        # Añadir enlace a ficha técnica
-        info_block.append(f"Ficha técnica completa: {ficha_url}")
-        
-        return "\n\n".join(info_block)
+        return "\n\n".join(info_parts)
 
     def _format_date(self, unix_timestamp):
-        """
-        Formatea fechas de Unix timestamp a formato legible
-        """
+        """Format dates from Unix timestamp to readable format"""
         if not unix_timestamp:
             return "No disponible"
         
         try:
-            # Las fechas en la API CIMA están en Unix timestamp (millisegundos)
+            # Dates in the CIMA API are in Unix timestamp (milliseconds)
             dt = datetime.fromtimestamp(unix_timestamp / 1000)
             return dt.strftime("%d/%m/%Y")
         except:
@@ -814,33 +1094,33 @@ Recuerda que tus respuestas pueden tener impacto en decisiones de salud, así qu
 
     async def chat(self, message: str) -> Dict[str, str]:
         """
-        Procesamiento de chat optimizado
+        Handle chat messages with comprehensive context
         """
         try:
-            # Obtener información relevante de CIMA
+            # Get relevant information from CIMA
             context = await self.get_medication_info(message)
             
-            # Si no hay resultados, intentar con términos más genéricos pero limitados
+            # If no results, try with generic terms
             if not context:
-                generic_terms = self._extract_generic_terms(message)
-                for term in generic_terms[:2]:  # Limitar a 2 términos para mejorar rendimiento
+                generic_terms = self._extract_search_terms(message)
+                for term in generic_terms:
                     term_context = await self.get_medication_info(term)
                     if term_context:
                         context = term_context
                         break
             
-            # Streamline prompt to reduce size
+            # Clean prompt and keep history
             prompt = f"""
 Consulta: {message}
 
 Contexto relevante de CIMA:
 {context if context else "No se encontró información específica en CIMA para esta consulta."}
 
-Responde de manera concisa, citando las fuentes específicas del contexto cuando sea relevante.
+Responde de manera detallada y precisa, citando las fuentes específicas del contexto.
 """
             
-            # Usar solo las últimas 4 mensajes para mantener el contexto más ligero
-            recent_history = self.conversation_history[-4:] if len(self.conversation_history) > 4 else self.conversation_history
+            # Using last 5 messages for context 
+            recent_history = self.conversation_history[-5:] if len(self.conversation_history) > 5 else self.conversation_history
             
             messages = [
                 {"role": "system", "content": self.system_prompt},
@@ -848,16 +1128,16 @@ Responde de manera concisa, citando las fuentes específicas del contexto cuando
                 {"role": "user", "content": prompt}
             ]
 
-            # Generar respuesta con temperatura reducida para mejor rendimiento
+            # Generate response 
             response = await self.openai_client.chat.completions.create(
                 model=Config.CHAT_MODEL,
                 messages=messages,
-                temperature=0.5
+                temperature=0.7
             )
 
             assistant_response = response.choices[0].message.content
             
-            # Añadir enlaces directos a CIMA
+            # Add direct links to CIMA
             pattern = r'\[Ref: ([^()]+) \(Nº Registro: (\d+)\)\]'
             
             def replace_with_link(match):
@@ -867,7 +1147,7 @@ Responde de manera concisa, citando las fuentes específicas del contexto cuando
             
             assistant_response_with_links = re.sub(pattern, replace_with_link, assistant_response)
             
-            # Actualizar historial de conversación
+            # Update conversation history
             self.conversation_history.extend([
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": assistant_response}
@@ -875,7 +1155,7 @@ Responde de manera concisa, citando las fuentes específicas del contexto cuando
 
             return {
                 "answer": assistant_response_with_links,
-                "context": context[:1000] + "..." if len(context) > 1000 else context,  # Truncate context for UI display
+                "context": context,
                 "history": self.conversation_history
             }
         except Exception as e:
@@ -887,38 +1167,8 @@ Responde de manera concisa, citando las fuentes específicas del contexto cuando
                 "history": self.conversation_history
             }
 
-    def _extract_generic_terms(self, message: str) -> List[str]:
-        """
-        Extrae términos genéricos más eficiente
-        """
-        # Categorías comunes de medicamentos
-        categories = [
-            "analgésico", "antibiótico", "antiinflamatorio", "antidepresivo", 
-            "ansiolítico", "antihistamínico", "antihipertensivo"
-        ]
-        
-        # Palabras clave de condiciones médicas comunes
-        conditions = [
-            "hipertensión", "diabetes", "asma", "ansiedad", "depresión",
-            "dolor", "infección", "alergia"
-        ]
-        
-        # Extracción más eficiente
-        message_lower = message.lower()
-        
-        # 1. Buscar categorías y condiciones
-        generic_terms = [term for term in categories + conditions if term in message_lower]
-        
-        # 2. Añadir palabras largas (posibles nombres de medicamentos)
-        words = [word for word in message.split() if len(word) > 4 and word.lower() not in generic_terms]
-        generic_terms.extend(words[:3])  # Limitar a 3 palabras para rendimiento
-        
-        return generic_terms
-
     def clear_history(self):
-        """
-        Limpiar historial de conversación
-        """
+        """Clear conversation history"""
         self.conversation_history = []
         
     async def close(self):
