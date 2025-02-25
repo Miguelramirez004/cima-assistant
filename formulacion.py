@@ -14,23 +14,13 @@ import tiktoken
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
-    """Count the number of tokens in a text string for a specific model."""
-    try:
-        enc = tiktoken.encoding_for_model(model)
-        return len(enc.encode(text))
-    except Exception as e:
-        # If there's an error, estimate with a simple approximation
-        # (roughly 4 characters per token for most languages)
-        return len(text) // 4
-
 @dataclass
 class FormulationAgent:
     openai_client: AsyncOpenAI
     base_url: str = Config.CIMA_BASE_URL
     reference_cache: Dict[str, List[Dict]] = field(default_factory=dict)
     session: aiohttp.ClientSession = None
-    max_tokens: int = 12000  # Conservative limit to leave room for response
+    max_tokens: int = 14000  # Leave room for prompt and response
 
     system_prompt = """Farmacéutico especialista en formulación magistral con amplio conocimiento en CIMA. 
 Genera formulaciones magistrales detalladas y precisas basadas en la información proporcionada por CIMA.
@@ -150,6 +140,19 @@ Utiliza un lenguaje claro, comprensible para el paciente medio sin conocimientos
 Basa toda la información en los datos proporcionados en el contexto CIMA, citando apropiadamente las fuentes con el formato [Ref X: Nombre del medicamento (Nº Registro)].
 """
 
+    def __init__(self, openai_client: AsyncOpenAI):
+        self.openai_client = openai_client
+        self.reference_cache = {}
+        self.base_url = Config.CIMA_BASE_URL
+        self.session = None
+        self.max_tokens = 14000
+        # Initialize tokenizer
+        self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
+
+    def num_tokens(self, text: str) -> int:
+        """Calculate the number of tokens in a string"""
+        return len(self.tokenizer.encode(text))
+
     async def get_session(self):
         """Get or create an aiohttp session with keepalive"""
         if self.session is None or self.session.closed:
@@ -164,24 +167,39 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         return self.session
     
     async def get_medication_details(self, nregistro: str) -> Dict:
-        """Optimized method to fetch medication details focusing on essential data"""
+        """Optimized method to fetch medication details concurrently"""
         logger.info(f"Fetching medication details for nregistro: {nregistro}")
         session = await self.get_session()
         
-        # Prioritize the most important sections for formulación magistral
-        essential_sections = {
+        # Most important sections first, so if we need to truncate, we keep the important ones
+        sections_of_interest = {
             "2": "composicion",
             "4.1": "indicaciones",
             "4.2": "posologia_procedimiento",
             "4.3": "contraindicaciones",
             "4.4": "advertencias",
+            "4.5": "interacciones",
             "6.1": "excipientes",
-            "6.3": "conservacion"
+            "6.3": "conservacion",
+            # Less critical sections after
+            "4.6": "embarazo_lactancia",
+            "4.8": "efectos_adversos",
+            "5.1": "propiedades_farmacodinamicas",
+            "5.2": "propiedades_farmacocineticas",
+            "5.3": "datos_preclinicos",
+            "6.2": "incompatibilidades",
+            "6.4": "especificaciones",
+            "6.5": "envase",
+            "6.6": "eliminacion",
+            "7": "titular_autorizacion",
+            "8": "numero_autorizacion",
+            "9": "fecha_autorizacion",
+            "10": "fecha_revision"
         }
         
         details = {}
         
-        # Define async tasks for concurrent execution - focusing on basic info first
+        # Define async tasks for concurrent execution
         async def get_basic_info():
             detail_url = f"{self.base_url}/medicamento"
             try:
@@ -194,35 +212,62 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                 logger.error(f"Error retrieving basic details: {str(e)}")
             return {"error": "Unable to retrieve basic details"}
         
+        async def get_section(section, key):
+            tech_url = f"{self.base_url}/docSegmentado/contenido/1"
+            params = {"nregistro": nregistro, "seccion": section}
+            try:
+                async with session.get(tech_url, params=params) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if isinstance(result, dict):
+                            return (key, result)
+            except Exception as e:
+                logger.error(f"Error retrieving section {section}: {str(e)}")
+            return (key, {"contenido": f"No disponible"})
+        
+        async def get_prospecto_section(section=None):
+            """Get prospecto content (HTML format)"""
+            url = f"{self.base_url}/docSegmentado/contenido/2"
+            params = {"nregistro": nregistro}
+            if section:
+                params["seccion"] = section
+            
+            headers = {"Accept": "text/html"}
+            try:
+                async with session.get(url, params=params, headers=headers) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        return {"prospecto_html": content}
+            except Exception as e:
+                logger.error(f"Error retrieving prospecto HTML: {str(e)}")
+            
+            return {"error": "Unable to retrieve prospecto HTML"}
+        
         # Execute basic info request first - we need this for sure
         basic_info = await get_basic_info()
         details["basic"] = basic_info
         
-        # Only fetch sections if we got basic info successfully and it's not an error
+        # Only fetch sections if we got basic info successfully
         if "error" not in basic_info:
             # Limit concurrent section requests to avoid overwhelming the API
-            semaphore = asyncio.Semaphore(5)  # Reduced to 5 concurrent requests
+            semaphore = asyncio.Semaphore(10)  # Max 10 concurrent requests
             
-            async def get_section(section, key):
-                tech_url = f"{self.base_url}/docSegmentado/contenido/1"
-                params = {"nregistro": nregistro, "seccion": section}
-                try:
-                    async with semaphore, session.get(tech_url, params=params) as response:
-                        if response.status == 200:
-                            result = await response.json()
-                            if isinstance(result, dict):
-                                return (key, result)
-                except Exception as e:
-                    logger.error(f"Error retrieving section {section}: {str(e)}")
-                return (key, {"contenido": f"No disponible"})
+            async def limited_section_fetch(section, key):
+                async with semaphore:
+                    return await get_section(section, key)
             
-            # Create tasks only for essential sections to reduce data volume
-            section_tasks = [get_section(section, key) for section, key in essential_sections.items()]
+            # Create tasks for each section (with concurrency limit)
+            section_tasks = [limited_section_fetch(section, key) for section, key in sections_of_interest.items()]
+            prospecto_task = get_prospecto_section()
             
             # Execute section tasks concurrently and process results
             section_results = await asyncio.gather(*section_tasks)
+            prospecto_result = await prospecto_task
+            
             for key, value in section_results:
                 details[key] = value
+                
+            details["prospecto"] = prospecto_result
         
         logger.info(f"Completed fetching details for nregistro: {nregistro}")
         return details
@@ -288,7 +333,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     def format_medication_info(self, index: int, med: Dict, details: Dict) -> str:
         """
-        Optimized medication information formatting focused on essential data
+        Streamlined medication information formatting to reduce token usage
         """
         # Basic medication info - with safe access
         basic_info = details.get('basic', {})
@@ -310,19 +355,19 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         # Get laboratory information
         lab_titular = basic_info.get('labtitular', 'No disponible')
         
-        # Format sections with proper handling of missing data
-        def get_section_content(section_key, max_length=400):
-            """Get section content with length limit"""
+        # Format sections with proper handling of missing data and truncation
+        def get_section_content(section_key, max_len=400):
             section_data = details.get(section_key, {})
             if not isinstance(section_data, dict):
                 return "No disponible"
+            
             content = section_data.get('contenido', 'No disponible')
-            # Limit length to reduce token usage
-            if len(content) > max_length:
-                return content[:max_length] + "..."
+            # Truncate long content to save tokens
+            if len(content) > max_len:
+                return content[:max_len] + "..."
             return content
         
-        # Create a concise reference focused on formulary-relevant information
+        # Include most important sections first
         reference = f"""
 [Referencia {index}: {med_name} (Nº Registro: {nregistro})]
 
@@ -335,29 +380,38 @@ INFORMACIÓN BÁSICA:
 COMPOSICIÓN:
 {get_section_content('composicion')}
 
-EXCIPIENTES:
-{get_section_content('excipientes')}
-
 INDICACIONES TERAPÉUTICAS:
 {get_section_content('indicaciones')}
 
 POSOLOGÍA Y ADMINISTRACIÓN:
 {get_section_content('posologia_procedimiento')}
 
+CONTRAINDICACIONES:
+{get_section_content('contraindicaciones')}
+
 ADVERTENCIAS Y PRECAUCIONES:
 {get_section_content('advertencias')}
 
+EXCIPIENTES:
+{get_section_content('excipientes')}
+
 CONSERVACIÓN:
 {get_section_content('conservacion')}
+"""
 
+        # Add URLs
+        reference += f"""
 URL FICHA TÉCNICA:
 https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
+
+URL PROSPECTO:
+https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
 """
         return reference
 
     async def get_relevant_context(self, query: str, n_results: int = 3) -> str:
         """
-        Enhanced context retrieval that prioritizes most relevant information
+        Enhanced context retrieval with token limiting
         """
         logger.info(f"Getting context for query: '{query}'")
         cache_key = f"{query}_{n_results}"
@@ -388,43 +442,27 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
         
         if cache_key in self.reference_cache:
             cached_results = self.reference_cache[cache_key]
-            context = [self.format_medication_info(i, med, details) 
-                      for i, (med, details) in enumerate(cached_results, 1)]
-            joined_context = "\n".join(context)
+            context_parts = [self.format_medication_info(i, med, details) 
+                            for i, (med, details) in enumerate(cached_results, 1)]
             
-            # Check if we need to truncate to stay within token limits
-            token_count = count_tokens(joined_context + self.system_prompt, Config.CHAT_MODEL)
-            if token_count > self.max_tokens:
-                logger.warning(f"Context too large ({token_count} tokens), truncating...")
-                return self.truncate_context(joined_context)
-            
-            return joined_context
+            # Calculate token count and truncate if needed
+            full_context = "\n".join(context_parts)
+            if self.num_tokens(full_context) > self.max_tokens:
+                logger.info(f"Context too large ({self.num_tokens(full_context)} tokens), truncating...")
+                # Use fewer results
+                smaller_context = "\n".join(context_parts[:2])
+                if self.num_tokens(smaller_context) > self.max_tokens:
+                    # Truncate even more - just use most relevant result
+                    return context_parts[0]
+                return smaller_context
+            return full_context
 
         # Get/create aiohttp session
         session = await self.get_session()
         search_url = f"{self.base_url}/medicamentos"
         
-        # Define search strategies prioritizing exact matches
-        search_strategies = [
-            # Try exact match first
-            {"params": {"nombre": query}, "priority": 1},
-            # Search by active principle
-            {"params": {"principiosActivos": active_principle}, "priority": 2},
-            # Search by pharmaceutical form
-            {"params": {"formaFarmaceutica": formulation_type}, "priority": 3},
-        ]
-        
-        # Add any additional terms that might be relevant (limit to 2 for performance)
-        terms = self._extract_search_terms(query)[:2]
-        for term in terms:
-            if term != query and term != active_principle:
-                search_strategies.append({
-                    "params": {"nombre": term}, 
-                    "priority": 4
-                })
-        
         # Perform searches concurrently
-        async def search_medications(params, priority):
+        async def search_medications(params):
             try:
                 async with session.get(search_url, params=params) as response:
                     if response.status == 200:
@@ -432,33 +470,33 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
                         if isinstance(data, dict) and "resultados" in data:
                             results = data.get("resultados", [])
                             logger.info(f"Search with params {params} returned {len(results)} results")
-                            return {"results": results, "priority": priority}
+                            return results
             except Exception as e:
                 logger.error(f"Error in search with params {params}: {str(e)}")
-            return {"results": [], "priority": priority}
+            return []
         
-        # Execute searches concurrently
-        search_tasks = [search_medications(strategy["params"], strategy["priority"]) 
-                         for strategy in search_strategies]
+        # Execute the most important searches concurrently
+        search_tasks = [
+            search_medications({"nombre": query}),
+            search_medications({"principiosActivos": active_principle}),
+            search_medications({"formaFarmaceutica": formulation_type})
+        ]
         
         search_results = await asyncio.gather(*search_tasks)
         
-        # Combine results with prioritization
+        # Combine results, avoiding duplicates
         all_results = []
         seen_nregistros = set()
         
-        # First add results from high priority searches
-        for priority in range(1, 5):  # Process in priority order
-            for result_set in search_results:
-                if result_set["priority"] == priority:
-                    for med in result_set["results"]:
-                        if isinstance(med, dict) and med.get("nregistro"):
-                            nregistro = med.get("nregistro")
-                            if nregistro not in seen_nregistros:
-                                seen_nregistros.add(nregistro)
-                                all_results.append(med)
+        for results in search_results:
+            for med in results:
+                if isinstance(med, dict) and med.get("nregistro"):
+                    nregistro = med.get("nregistro")
+                    if nregistro not in seen_nregistros:
+                        seen_nregistros.add(nregistro)
+                        all_results.append(med)
         
-        # Limit results for better performance (use original n_results parameter)
+        # Limit results to requested number
         results = all_results[:n_results]
         cached_results = []
 
@@ -466,7 +504,7 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
             logger.info(f"Found {len(results)} relevant medications, fetching details")
             
             # Fetch details for all medications concurrently
-            semaphore = asyncio.Semaphore(3)  # Lower to 3 concurrent detail fetches
+            semaphore = asyncio.Semaphore(3)  # Limit concurrent requests
             
             async def fetch_med_details(med):
                 async with semaphore:
@@ -486,81 +524,23 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
             self.reference_cache[cache_key] = cached_results
             
             # Format context with complete information
-            context = [self.format_medication_info(i, med, details) 
-                      for i, (med, details) in enumerate(cached_results, 1)]
+            context_parts = [self.format_medication_info(i, med, details) 
+                          for i, (med, details) in enumerate(cached_results, 1)]
             
-            joined_context = "\n".join(context)
+            # Calculate token count and truncate if needed
+            full_context = "\n".join(context_parts)
+            if self.num_tokens(full_context) > self.max_tokens:
+                logger.info(f"Context too large ({self.num_tokens(full_context)} tokens), truncating...")
+                # Use fewer results
+                smaller_context = "\n".join(context_parts[:2])
+                if self.num_tokens(smaller_context) > self.max_tokens:
+                    # Truncate even more - just use most relevant result
+                    return context_parts[0]
+                return smaller_context
             
-            # Check if we need to truncate to stay within token limits
-            token_count = count_tokens(joined_context + self.system_prompt, Config.CHAT_MODEL)
-            if token_count > self.max_tokens:
-                logger.warning(f"Context too large ({token_count} tokens), truncating...")
-                return self.truncate_context(joined_context)
-            
-            return joined_context
+            return full_context
         
         return "No se encontraron resultados relevantes."
-    
-    def truncate_context(self, context: str) -> str:
-        """Truncate context to fit within token limits"""
-        system_tokens = count_tokens(self.system_prompt, Config.CHAT_MODEL)
-        max_context_tokens = self.max_tokens - system_tokens - 500  # Leave 500 tokens buffer
-        
-        # First try: reduce each reference section separately
-        references = context.split("[Referencia ")
-        
-        # Keep the first reference (header)
-        if not references:
-            return "No se encontraron referencias relevantes."
-        
-        # Process each reference to make it more concise
-        processed_refs = []
-        current_tokens = 0
-        
-        # Start with the header if it exists
-        header = references[0]
-        processed_refs.append(header)
-        current_tokens += count_tokens(header, Config.CHAT_MODEL)
-        
-        # Process each reference section
-        for i, ref in enumerate(references[1:], 1):
-            # Restore the reference prefix
-            ref = "[Referencia " + ref
-            
-            # Check if adding this reference would exceed the token limit
-            ref_tokens = count_tokens(ref, Config.CHAT_MODEL)
-            
-            if current_tokens + ref_tokens <= max_context_tokens:
-                # If it fits, add the whole reference
-                processed_refs.append(ref)
-                current_tokens += ref_tokens
-            else:
-                # We need to truncate this reference
-                # Keep only the essential parts (basic info, composition, indications)
-                lines = ref.split('\n')
-                essential_ref = []
-                in_essential_section = False
-                
-                for line in lines:
-                    if "INFORMACIÓN BÁSICA:" in line or "COMPOSICIÓN:" in line or "EXCIPIENTES:" in line:
-                        in_essential_section = True
-                    elif "ADVERTENCIAS" in line or "CONSERVACIÓN" in line:
-                        in_essential_section = False
-                    
-                    if in_essential_section or "URL FICHA TÉCNICA:" in line or "[Referencia" in line:
-                        essential_ref.append(line)
-                
-                truncated_ref = '\n'.join(essential_ref)
-                truncated_tokens = count_tokens(truncated_ref, Config.CHAT_MODEL)
-                
-                if current_tokens + truncated_tokens <= max_context_tokens:
-                    processed_refs.append(truncated_ref)
-                    current_tokens += truncated_tokens
-                else:
-                    # Can't even fit essential parts, we'll stop here
-                    break
-        
-        return '\n'.join(processed_refs)
 
     def _extract_search_terms(self, query: str) -> List[str]:
         """Extract potential search terms from the query"""
@@ -577,20 +557,20 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
             matches = re.findall(pattern, query)
             potential_terms.extend([m.strip() for m in matches if len(m.strip()) > 3])
         
-        # Add individual words that might be medication names (skip common words)
+        # Add individual words that might be medication names
         common_words = {"sobre", "para", "como", "este", "esta", "estos", "estas", "cual", "cuales", 
-                        "con", "por", "los", "las", "del", "que", "realizar", "realizar", "redactar", 
-                        "crear", "generar", "prospecto", "formular", "elaborar"}
+                       "con", "por", "los", "las", "del", "que", "realizar", "realizar", "redactar", 
+                       "crear", "generar", "prospecto", "formular", "elaborar"}
         
         words = query.split()
         for word in words:
             if len(word) > 4 and word.lower() not in common_words and word not in potential_terms:
                 potential_terms.append(word)
         
-        # Add bi-grams (pairs of words) - limit to first 2 words
-        if len(words) > 1:
-            if len(words[0]) > 3 and len(words[1]) > 3:
-                bigram = f"{words[0]} {words[1]}"
+        # Add bi-grams (pairs of words)
+        for i in range(len(words) - 1):
+            if len(words[i]) > 3 and len(words[i+1]) > 3:
+                bigram = f"{words[i]} {words[i+1]}"
                 if bigram not in potential_terms:
                     potential_terms.append(bigram)
         
@@ -606,6 +586,13 @@ https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
         
         # Select the appropriate system prompt based on query type
         system_prompt = self.prospecto_prompt if formulation_info["is_prospecto"] else self.system_prompt
+        
+        # Count tokens before creating prompt
+        system_tokens = self.num_tokens(system_prompt)
+        query_tokens = self.num_tokens(query)
+        context_tokens = self.num_tokens(context)
+        
+        logger.info(f"Token counts - System: {system_tokens}, Query: {query_tokens}, Context: {context_tokens}")
         
         # Create prompt with complete context
         prompt = f"""
@@ -627,30 +614,27 @@ CONSULTA ORIGINAL:
 Genera una respuesta completa y exhaustiva utilizando toda la información disponible en el contexto. Cita las fuentes CIMA usando el formato [Ref X: Nombre del medicamento (Nº Registro)].
 """
 
-        # Check if the prompt exceeds token limit
-        token_count = count_tokens(prompt + system_prompt, Config.CHAT_MODEL)
-        if token_count > self.max_tokens:
-            logger.warning(f"Prompt too large ({token_count} tokens), truncating context...")
-            # Truncate context to fit within limits
-            max_context_tokens = self.max_tokens - count_tokens(system_prompt + prompt.replace("{context}", ""), Config.CHAT_MODEL)
-            context_tokens = count_tokens(context, Config.CHAT_MODEL)
-            
-            if context_tokens > max_context_tokens:
-                # Truncate context to fit within limits
-                context = self.truncate_context(context)
-                # Rebuild prompt with truncated context
-                prompt = prompt.replace("{context}", context)
-
-        logger.info("Generating response with OpenAI")
-        response = await self.openai_client.chat.completions.create(
-            model=Config.CHAT_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7
-        )
-        return response.choices[0].message.content
+        prompt_tokens = self.num_tokens(prompt)
+        total_tokens = system_tokens + prompt_tokens
+        
+        logger.info(f"Total input tokens: {total_tokens}")
+        
+        if total_tokens > 15000:
+            logger.warning(f"Token count {total_tokens} approaching limit, might encounter issues")
+        
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model=Config.CHAT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Error in OpenAI API call: {str(e)}")
+            raise Exception(f"Error al generar la respuesta: {str(e)}")
 
     async def answer_question(self, question: str) -> Dict[str, str]:
         context = await self.get_relevant_context(question)
@@ -685,7 +669,7 @@ class CIMAExpertAgent:
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
     base_url: str = Config.CIMA_BASE_URL
     session: aiohttp.ClientSession = None
-    max_tokens: int = 12000  # Conservative limit to leave room for response
+    max_tokens: int = 14000  # Reserve tokens for prompt and response
     
     def __init__(self, openai_client: AsyncOpenAI):
         self.openai_client = openai_client
@@ -693,6 +677,13 @@ class CIMAExpertAgent:
         self.base_url = Config.CIMA_BASE_URL
         self.conversation_history = []
         self.session = None
+        self.max_tokens = 14000
+        # Initialize tokenizer
+        self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
+
+    def num_tokens(self, text: str) -> int:
+        """Calculate the number of tokens in a string"""
+        return len(self.tokenizer.encode(text))
 
     system_prompt = """Experto conversacional en medicamentos y CIMA (Centro de Información online de Medicamentos de la AEMPS). 
 
@@ -780,24 +771,18 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     async def get_medication_info(self, query: str) -> str:
         """
-        Optimized implementation for obtaining medication information
+        Optimized implementation for obtaining medication information with token limiting
         """
         cache_key = f"query_{query}"
         if cache_key in self.reference_cache:
-            cached_result = self.reference_cache[cache_key]
-            # Check if cached result fits token limit
-            if count_tokens(cached_result + self.system_prompt, Config.CHAT_MODEL) <= self.max_tokens:
-                return cached_result
-            else:
-                # Truncate if needed
-                return self.truncate_context(cached_result)
+            return self.reference_cache[cache_key]
 
         # Detect if this is a prospecto request
         prospecto_pattern = r'(?:redactar|generar|crear|elaborar|realizar?e?|escrib[ei]r|hac[ae]r|desarroll[ae]r)\s+(?:un|el|uns?|una?)?\s+prospecto'
         is_prospecto = bool(re.search(prospecto_pattern, query.lower()))
         logger.info(f"Query: '{query}', Is prospecto: {is_prospecto}")
         
-        # Extract potential terms for search
+        # Extract all potential search terms
         potential_terms = self._extract_search_terms(query)
         
         # Extract medication name from prospecto request
@@ -830,40 +815,39 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         processed_nregistros = set()
         all_med_info = []
         
-        # Optimize search strategy: perform direct search first, then iterate through terms
         # First try with full query if it's not a prospecto request
         if not is_prospecto:
             meds = await self._search_medications(session, query)
-            for med in meds[:3]:  # Limit to top 3 results for performance
+            for med in meds[:3]:  # Limit to 3 results for token management
                 if med.get("nregistro") not in processed_nregistros:
                     processed_nregistros.add(med.get("nregistro"))
-                    med_info = await self._get_optimized_medication_details(session, med)
+                    med_info = await self._get_complete_medication_details(session, med)
                     if med_info:
                         all_med_info.append(med_info)
         
         # For prospecto requests or if we didn't get results, focus on the extracted terms
-        if is_prospecto or len(all_med_info) < 2:  # Need at least 2 results for good context
-            for term in potential_terms[:3]:  # Limit to top 3 terms for performance
+        if is_prospecto or len(all_med_info) < 2:
+            for term in potential_terms[:3]:  # Limit to first 3 terms
                 term_meds = await self._search_medications(session, term)
-                for med in term_meds[:2]:  # Max 2 per term
+                for med in term_meds[:2]:  # Limit to 2 results per term
                     if med.get("nregistro") not in processed_nregistros:
                         processed_nregistros.add(med.get("nregistro"))
-                        med_info = await self._get_optimized_medication_details(session, med, fetch_prospecto=is_prospecto)
+                        med_info = await self._get_complete_medication_details(session, med, fetch_prospecto=is_prospecto)
                         if med_info:
                             all_med_info.append(med_info)
-                            
-                # Limit total results to manage context size
-                if len(all_med_info) >= 3:
-                    break
         
-        # Combine all results
+        # Combine all results and check token count
         combined_results = "\n\n".join(all_med_info)
         
-        # Check token count and truncate if needed
-        token_count = count_tokens(combined_results + self.system_prompt, Config.CHAT_MODEL)
-        if token_count > self.max_tokens:
-            logger.warning(f"Context too large ({token_count} tokens), truncating...")
-            combined_results = self.truncate_context(combined_results)
+        # If the combined results exceed our token limit, truncate
+        if self.num_tokens(combined_results) > self.max_tokens:
+            logger.info(f"Context too large ({self.num_tokens(combined_results)} tokens), truncating...")
+            # Try with fewer results first
+            smaller_context = "\n\n".join(all_med_info[:2])
+            if self.num_tokens(smaller_context) > self.max_tokens:
+                # If still too large, just use the most relevant result
+                smaller_context = all_med_info[0]
+            combined_results = smaller_context
         
         # Store in cache
         self.reference_cache[cache_key] = combined_results
@@ -871,7 +855,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     def _extract_search_terms(self, query: str) -> List[str]:
         """
-        Extract potentially relevant search terms from the query
+        Extract all possible search terms from the query
         """
         # Patterns for different types of potential search terms
         patterns = [
@@ -899,28 +883,49 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         
         # Add bi-grams (pairs of words)
         for i in range(len(words) - 1):
-            if i < 2 and len(words[i]) > 3 and len(words[i+1]) > 3:  # Limit to first 2 pairs
+            if len(words[i]) > 3 and len(words[i+1]) > 3:
                 bigram = f"{words[i]} {words[i+1]}"
                 potential_terms.append(bigram)
         
+        # Extract medication categories and conditions
+        categories = [
+            "analgésico", "antibiótico", "antiinflamatorio", "antidepresivo", 
+            "ansiolítico", "antihistamínico", "antihipertensivo", "hipnótico",
+            "antiácido", "anticoagulante", "antidiabético", "antipsicótico",
+            "corticoide", "diurético", "laxante", "mucolítico"
+        ]
+        
+        conditions = [
+            "hipertensión", "diabetes", "asma", "ansiedad", "depresión",
+            "dolor", "infección", "alergia", "insomnio", "artritis",
+            "migraña", "úlcera", "reflujo", "colesterol", "epilepsia"
+        ]
+        
+        # Add any matching categories and conditions
+        query_lower = query.lower()
+        for term in categories + conditions:
+            if term in query_lower:
+                potential_terms.append(term)
+        
         # Remove duplicates
         seen = set()
-        return [x for x in potential_terms if x.lower() not in seen and not seen.add(x.lower())][:5]  # Limit to top 5
+        return [x for x in potential_terms if x.lower() not in seen and not seen.add(x.lower())]
 
     async def _search_medications(self, session, query: str) -> List[Dict]:
         """
-        Search medications using multiple strategies
+        Search medications with multiple strategies
         """
         search_url = f"{self.base_url}/medicamentos"
         all_results = []
         
-        # Search strategies in order of relevance - prioritize specific searches
+        # Search strategies in order of relevance
         search_strategies = [
             {"params": {"nombre": query}},
-            {"params": {"practiv1": query}}
+            {"params": {"practiv1": query}},
+            {"params": {"atc": query}}
         ]
         
-        # Execute first two strategies concurrently for speed
+        # Execute searches concurrently
         async def execute_search(params):
             try:
                 async with session.get(search_url, params=params) as response:
@@ -932,7 +937,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                 logger.error(f"Error in medication search: {str(e)}")
             return []
         
-        # Run primary searches concurrently
+        # Run all searches concurrently
         search_tasks = [execute_search(strategy["params"]) for strategy in search_strategies]
         search_results = await asyncio.gather(*search_tasks)
         
@@ -963,18 +968,21 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     async def _search_in_ficha_tecnica(self, session, query: str) -> List[Dict]:
         """
-        Search in technical files for more comprehensive results (used as fallback)
+        Search in technical files for more comprehensive results
         """
         results = []
         search_url = f"{self.base_url}/buscarEnFichaTecnica"
         
-        # Important sections in ficha técnica for comprehensive search (reduced to key sections)
-        sections = ["4.1", "4.2"]
+        # Focus on most important sections for token efficiency
+        sections = ["4.1", "4.2", "4.3"]
         
-        # Extract key words for search (limit to 2 words for performance)
-        words = [word for word in query.split() if len(word) > 3][:2]
+        # Extract key words for search
+        words = [word for word in query.split() if len(word) > 3]
         if not words:
             return []
+            
+        # Limit to 2 words for performance and token management
+        words = words[:2]
         
         search_body = []
         for section in sections:
@@ -994,216 +1002,144 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         except Exception as e:
             logger.error(f"Error in ficha técnica search: {str(e)}")
         
-        return results[:3]  # Limit to top 3 results
+        return results
 
-    async def _get_optimized_medication_details(self, session, med: Dict, fetch_prospecto: bool = False) -> str:
+    async def _get_complete_medication_details(self, session, med: Dict, fetch_prospecto: bool = False) -> str:
         """
-        Get essential medication details in an optimized way
+        Get comprehensive details for a medication with token efficiency
         """
         if not isinstance(med, dict) or not med.get("nregistro"):
             return ""
         
         nregistro = med.get("nregistro")
         
-        # Define the essential sections to retrieve (focusing on the most important ones)
-        essential_sections = {
+        # Track all API calls to make concurrently
+        api_tasks = []
+        
+        # 1. Basic information
+        async def get_basic_info():
+            try:
+                url = f"{self.base_url}/medicamento"
+                async with session.get(url, params={"nregistro": nregistro}) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if isinstance(result, dict):
+                            return {"type": "basic", "data": result}
+            except Exception as e:
+                logger.error(f"Error getting basic info: {str(e)}")
+            return {"type": "basic", "data": {}}
+        
+        api_tasks.append(get_basic_info())
+        
+        # 2. Most important technical sections only
+        key_sections = {
             "4.1": "indicaciones",
             "4.2": "posologia",
             "4.3": "contraindicaciones",
-            "4.8": "efectos_adversos"
+            "4.4": "advertencias",
+            "4.8": "efectos_adversos",
+            "6.1": "excipientes"
         }
         
-        # 1. Get basic information first (most important)
-        basic_info = {}
-        try:
-            url = f"{self.base_url}/medicamento"
-            async with session.get(url, params={"nregistro": nregistro}) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    if isinstance(result, dict):
-                        basic_info = result
-        except Exception as e:
-            logger.error(f"Error getting basic info: {str(e)}")
-            return ""  # If we can't get basic info, abort
-        
-        # 2. Get essential sections concurrently
-        sections_data = {}
-        
-        # Limit concurrent requests
-        semaphore = asyncio.Semaphore(4)
-        
-        async def fetch_section(section, key):
-            async with semaphore:
-                try:
-                    section_url = f"{self.base_url}/docSegmentado/contenido/1"
-                    async with session.get(section_url, params={"nregistro": nregistro, "seccion": section}) as response:
-                        if response.status == 200:
-                            result = await response.json()
-                            if isinstance(result, dict) and "contenido" in result:
-                                content = result.get("contenido", "")
-                                # Limit content length to reduce token usage (300 chars per section)
-                                if len(content) > 300:
-                                    content = content[:297] + "..."
-                                return (key, content)
-                except Exception as e:
-                    logger.error(f"Error getting section {section}: {str(e)}")
-                return (key, "No disponible")
-        
-        # Execute section fetches concurrently
-        section_tasks = [fetch_section(section, key) for section, key in essential_sections.items()]
-        section_results = await asyncio.gather(*section_tasks)
-        
-        for key, content in section_results:
-            sections_data[key] = content
-        
-        # 3. Get prospecto if requested (only essential for prospecto requests)
-        prospecto_data = None
-        if fetch_prospecto:
+        async def get_section(section, key):
             try:
-                # Try the direct HTML endpoint first (more efficient)
-                prospecto_url = f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html"
-                async with session.get(prospecto_url) as response:
+                section_url = f"{self.base_url}/docSegmentado/contenido/1"
+                async with session.get(section_url, params={"nregistro": nregistro, "seccion": section}) as response:
                     if response.status == 200:
-                        content = await response.text()
-                        # Extract just the main content to reduce size
-                        # Simple approximation - extract content between main tags if present
-                        main_content = re.search(r'<main.*?>(.*?)</main>', content, re.DOTALL)
-                        if main_content:
-                            prospecto_data = main_content.group(1)
-                        else:
-                            # If no main tags, just take a portion of the content
-                            prospecto_data = content[:1000] + "..."
+                        result = await response.json()
+                        if isinstance(result, dict) and "contenido" in result:
+                            content = result.get("contenido", "")
+                            # Truncate long content to save tokens
+                            if len(content) > 400:
+                                content = content[:397] + "..."
+                            return {"type": "section", "key": key, "data": content}
             except Exception as e:
-                logger.error(f"Error getting prospecto: {str(e)}")
+                logger.error(f"Error getting section {section}: {str(e)}")
+            return {"type": "section", "key": key, "data": "No disponible"}
         
-        # 4. Format the data into a concise text representation
+        for section, key in key_sections.items():
+            api_tasks.append(get_section(section, key))
+        
+        # 3. Prospecto if requested
+        if fetch_prospecto:
+            async def get_prospecto():
+                try:
+                    # Try the HTML version first for token efficiency
+                    url = f"{self.base_url}/docSegmentado/contenido/2"
+                    params = {"nregistro": nregistro}
+                    headers = {"Accept": "text/html"}
+                    async with session.get(url, params=params, headers=headers) as response:
+                        if response.status == 200:
+                            content = await response.text()
+                            # Clean and truncate HTML
+                            cleaned = re.sub(r'<[^>]+>', ' ', content)
+                            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                            if len(cleaned) > 800:
+                                cleaned = cleaned[:797] + "..."
+                            return {"type": "prospecto", "data": cleaned}
+                except Exception as e:
+                    logger.error(f"Error getting prospecto: {str(e)}")
+                return {"type": "prospecto", "data": "No disponible"}
+                
+            api_tasks.append(get_prospecto())
+        
+        # Execute all API calls concurrently
+        api_results = await asyncio.gather(*api_tasks)
+        
+        # Process results
+        basic_info = {}
+        sections_data = {}
+        prospecto_data = None
+        
+        for result in api_results:
+            if result["type"] == "basic":
+                basic_info = result["data"]
+            elif result["type"] == "section":
+                sections_data[result["key"]] = result["data"]
+            elif result["type"] == "prospecto":
+                prospecto_data = result["data"]
+        
+        # Format into a token-efficient text description
+        return self._format_medication_details_text(med, basic_info, sections_data, nregistro, prospecto_data)
+        
+    def _format_medication_details_text(self, med, basic_info, sections_data, nregistro, prospecto_data=None):
+        """Format medication details with token efficiency"""
         # Basic details
         name = med.get("nombre", basic_info.get("nombre", "No disponible"))
         pactivos = med.get("pactivos", basic_info.get("pactivos", "No disponible"))
         lab = basic_info.get("labtitular", "No disponible")
         
-        # URLs
-        ficha_url = f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html"
-        prospecto_url = f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html"
-        
-        # Format dates if available
-        estado = basic_info.get("estado", {})
-        fecha_aut = self._format_date(estado.get("aut", "")) if isinstance(estado, dict) else "No disponible"
-        
-        # Build the information block - focus on essentials
+        # Build the information block with most important sections first
         info_parts = [
             f"[Ref: {name} (Nº Registro: {nregistro})]",
             f"Nombre: {name}",
             f"Principios activos: {pactivos}",
-            f"Laboratorio: {lab}",
-            f"Fecha autorización: {fecha_aut}"
+            f"Laboratorio: {lab}"
         ]
         
-        # Add essential sections
+        # Add key sections, most important first
         for key, title in {
             "indicaciones": "INDICACIONES TERAPÉUTICAS",
             "posologia": "POSOLOGÍA Y FORMA DE ADMINISTRACIÓN",
             "contraindicaciones": "CONTRAINDICACIONES",
-            "efectos_adversos": "EFECTOS ADVERSOS"
+            "advertencias": "ADVERTENCIAS Y PRECAUCIONES",
+            "efectos_adversos": "EFECTOS ADVERSOS",
+            "excipientes": "EXCIPIENTES"
         }.items():
             content = sections_data.get(key, "")
             if content and len(content.strip()) > 0:
                 info_parts.append(f"{title}:\n{content}")
         
-        # Add prospecto data if available (for prospecto requests)
-        if prospecto_data:
-            # Clean HTML tags for readability
-            clean_prospecto = re.sub(r'<[^>]+>', ' ', prospecto_data)
-            clean_prospecto = re.sub(r'\s+', ' ', clean_prospecto).strip()
-            if len(clean_prospecto) > 500:  # Ensure it's not too long
-                clean_prospecto = clean_prospecto[:497] + "..."
-            info_parts.append(f"PROSPECTO (extracto):\n{clean_prospecto}")
+        # Add prospecto if available (only for prospecto requests)
+        if prospecto_data and prospecto_data != "No disponible":
+            info_parts.append("PROSPECTO (Información para el paciente):")
+            info_parts.append(prospecto_data)
         
         # Add links to technical data sheet and prospecto
-        info_parts.append(f"Ficha técnica completa: {ficha_url}")
-        info_parts.append(f"Prospecto completo: {prospecto_url}")
+        info_parts.append(f"Ficha técnica completa: https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html")
+        info_parts.append(f"Prospecto completo: https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html")
         
         return "\n\n".join(info_parts)
-
-    def truncate_context(self, context: str) -> str:
-        """Truncate context to fit within token limits"""
-        # Calculate how many tokens we can use for context
-        system_tokens = count_tokens(self.system_prompt, Config.CHAT_MODEL)
-        history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in self.conversation_history[-4:]])
-        history_tokens = count_tokens(history_text, Config.CHAT_MODEL)
-        
-        # Leave room for the response (4000 tokens) and user query (500 tokens)
-        available_tokens = self.max_tokens - system_tokens - history_tokens - 4500
-        
-        # If available tokens is negative, we need to truncate history instead
-        if available_tokens < 1000:  # Minimum threshold
-            # Reduce history usage
-            self.conversation_history = self.conversation_history[-2:]
-            # Recalculate
-            history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in self.conversation_history])
-            history_tokens = count_tokens(history_text, Config.CHAT_MODEL)
-            available_tokens = self.max_tokens - system_tokens - history_tokens - 4500
-        
-        # Ensure we have at least 1000 tokens for context
-        available_tokens = max(1000, available_tokens)
-        
-        # If context is already within limits, return as is
-        context_tokens = count_tokens(context, Config.CHAT_MODEL)
-        if context_tokens <= available_tokens:
-            return context
-        
-        # Split context into medication references
-        references = context.split("[Ref:")
-        if not references:
-            return "No se encontró información relevante."
-        
-        # Start with any header text
-        result = references[0]
-        current_tokens = count_tokens(result, Config.CHAT_MODEL)
-        
-        # Process each reference
-        for i, ref in enumerate(references[1:], 1):
-            # Restore the reference prefix
-            ref_text = "[Ref:" + ref
-            ref_tokens = count_tokens(ref_text, Config.CHAT_MODEL)
-            
-            # If adding this reference would exceed the limit
-            if current_tokens + ref_tokens > available_tokens:
-                # If this is the first reference, we need to include at least part of it
-                if i == 1:
-                    # Extract the essential parts only
-                    ref_lines = ref_text.split('\n')
-                    essential_lines = []
-                    
-                    # Include reference header and basic info
-                    for j, line in enumerate(ref_lines):
-                        if j < 5 or "INDICACIONES" in line:  # First 5 lines + indications
-                            essential_lines.append(line)
-                    
-                    # Add URLs at the end
-                    for line in ref_lines:
-                        if "Ficha técnica" in line or "Prospecto" in line:
-                            essential_lines.append(line)
-                    
-                    partial_ref = '\n'.join(essential_lines)
-                    partial_tokens = count_tokens(partial_ref, Config.CHAT_MODEL)
-                    
-                    if current_tokens + partial_tokens <= available_tokens:
-                        result += partial_ref
-                    else:
-                        # We're really out of space, just take the first few lines
-                        first_lines = '\n'.join(ref_lines[:3])
-                        result += first_lines + "\n[...información truncada por limitaciones de espacio...]"
-                
-                # Add a note that information was truncated
-                result += "\n\n[Se ha truncado parte de la información debido a limitaciones de tamaño.]"
-                break
-            else:
-                # This reference fits, add it
-                result += ref_text
-                current_tokens += ref_tokens
-        
-        return result
 
     def _format_date(self, unix_timestamp):
         """Format dates from Unix timestamp to readable format"""
@@ -1219,7 +1155,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
 
     async def chat(self, message: str) -> Dict[str, str]:
         """
-        Handle chat messages with comprehensive context but within token limits
+        Handle chat messages with token management
         """
         try:
             # Check if this is a prospecto request
@@ -1241,24 +1177,27 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
             # Choose the appropriate system prompt
             system_prompt = self.prospecto_prompt if is_prospecto else self.system_prompt
             
-            # Calculate token usage to ensure we're within limits
-            history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in self.conversation_history[-4:]])
-            message_tokens = count_tokens(message, Config.CHAT_MODEL)
-            system_tokens = count_tokens(system_prompt, Config.CHAT_MODEL)
-            history_tokens = count_tokens(history_text, Config.CHAT_MODEL)
-            context_tokens = count_tokens(context, Config.CHAT_MODEL)
+            # Count tokens for components
+            system_tokens = self.num_tokens(system_prompt)
+            message_tokens = self.num_tokens(message)
+            context_tokens = self.num_tokens(context)
             
-            total_tokens = system_tokens + history_tokens + message_tokens + context_tokens
-            logger.info(f"Token usage estimate: {total_tokens} (limit: {self.max_tokens})")
+            logger.info(f"Token counts - System: {system_tokens}, Message: {message_tokens}, Context: {context_tokens}")
             
-            # If we're over the limit, truncate the context
-            if total_tokens > self.max_tokens:
-                logger.warning(f"Total tokens ({total_tokens}) exceeds limit, truncating context")
-                context = self.truncate_context(context)
-                # Recalculate
-                context_tokens = count_tokens(context, Config.CHAT_MODEL)
-                total_tokens = system_tokens + history_tokens + message_tokens + context_tokens
-                logger.info(f"After truncation: {total_tokens} tokens")
+            # Process conversation history to stay within limits
+            history_tokens = 0
+            processed_history = []
+            
+            # Add as much history as will fit, starting from most recent
+            for msg in reversed(self.conversation_history[-10:]):
+                msg_tokens = self.num_tokens(msg["content"])
+                if history_tokens + msg_tokens < 3000:  # Reserve token budget for history
+                    processed_history.insert(0, msg)
+                    history_tokens += msg_tokens
+                else:
+                    break
+                    
+            logger.info(f"History tokens: {history_tokens}, messages: {len(processed_history)}")
             
             # Prepare the prompt
             prompt = f"""
@@ -1267,16 +1206,20 @@ Consulta: {message}
 Contexto relevante de CIMA:
 {context if context else "No se encontró información específica en CIMA para esta consulta."}
 
-Responde de manera detallada y precisa, citando las fuentes específicas del contexto.
-{"Genera un prospecto completo siguiendo las directrices de la AEMPS." if is_prospecto else ""}
+{"Genera un prospecto completo siguiendo las directrices de la AEMPS." if is_prospecto else "Responde de manera detallada y precisa, citando las fuentes específicas del contexto."}
 """
             
-            # Using last 4 messages for context 
-            recent_history = self.conversation_history[-4:] if len(self.conversation_history) > 4 else self.conversation_history
+            prompt_tokens = self.num_tokens(prompt)
+            total_tokens = system_tokens + history_tokens + prompt_tokens
+            
+            logger.info(f"Total input tokens: {total_tokens}")
+            
+            if total_tokens > 15000:
+                logger.warning(f"Token count {total_tokens} approaching limit, might encounter issues")
             
             messages = [
                 {"role": "system", "content": system_prompt},
-                *recent_history,
+                *processed_history,
                 {"role": "user", "content": prompt}
             ]
 
@@ -1305,9 +1248,14 @@ Responde de manera detallada y precisa, citando las fuentes específicas del con
                 {"role": "assistant", "content": assistant_response}
             ])
 
+            # Truncate context for UI display to improve performance
+            display_context = context
+            if len(display_context) > 10000:
+                display_context = context[:9997] + "..."
+
             return {
                 "answer": assistant_response_with_links,
-                "context": context,
+                "context": display_context,
                 "history": self.conversation_history
             }
         except Exception as e:
