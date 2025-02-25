@@ -1,6 +1,8 @@
 import streamlit as st
 import asyncio
 import nest_asyncio
+import logging
+from concurrent.futures import ThreadPoolExecutor
 from openai import AsyncOpenAI
 import re
 import os
@@ -11,28 +13,62 @@ from formulacion import FormulationAgent, CIMAExpertAgent
 from config import Config
 from openai_client import create_async_openai_client
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # Apply nest_asyncio to allow nested event loops
-# This helps prevent "Event loop is closed" errors in Streamlit
 nest_asyncio.apply()
 
 # Configure page settings
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
+# Global executor for running async code
+executor = ThreadPoolExecutor(max_workers=4)
+
 # Ensure we have a single, reusable event loop
 @st.cache_resource
 def get_event_loop():
+    """Get a reusable event loop with proper error handling"""
     try:
+        # First try to get the current event loop
         loop = asyncio.get_event_loop()
         if loop.is_closed():
+            # Create a new one if closed
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
     except RuntimeError:
+        # Create a new loop if there isn't one in this thread
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+    
     return loop
 
-# Get or create event loop
-loop = get_event_loop()
+# Improved run_async function to handle event loop issues
+def run_async(async_func, *args, **kwargs):
+    """Run an async function in a dedicated event loop with proper cleanup"""
+    def run_in_executor():
+        # Create a new event loop for this specific operation
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(async_func(*args, **kwargs))
+        except Exception as e:
+            logger.error(f"Error in async execution: {str(e)}")
+            raise
+        finally:
+            # Give pending tasks a chance to complete
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            
+            # Close the loop properly
+            if hasattr(loop, 'shutdown_asyncgens'):
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+    
+    # Run the async code in a separate thread with its own event loop
+    return executor.submit(run_in_executor).result()
 
 # Initialize async resources with proper lifecycle management
 @st.cache_resource
@@ -44,12 +80,27 @@ def init_agents():
     formulation_agent = FormulationAgent(openai_client)
     cima_expert_agent = CIMAExpertAgent(openai_client)
     
+    # Register cleanup handler for Streamlit session end
+    def cleanup_resources():
+        """Properly clean up resources when the Streamlit session ends"""
+        try:
+            # Run the close methods in a new event loop
+            cleanup_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(cleanup_loop)
+            cleanup_loop.run_until_complete(asyncio.gather(
+                formulation_agent.close(), 
+                cima_expert_agent.close(),
+                return_exceptions=True
+            ))
+            cleanup_loop.close()
+        except Exception as e:
+            logger.error(f"Error during cleanup: {str(e)}")
+    
+    # Register the cleanup function to be called on app shutdown
+    import atexit
+    atexit.register(cleanup_resources)
+    
     return formulation_agent, cima_expert_agent
-
-# Run async function within our managed event loop
-def run_async(coro):
-    """Run an async function within our managed event loop"""
-    return loop.run_until_complete(coro)
 
 # Custom CSS with just the essential styling
 st.markdown("""
@@ -115,7 +166,8 @@ with st.sidebar:
         # Reset state
         st.session_state.search_history = set()
         st.session_state.formulation_history = []
-        st.session_state.agents[1].clear_history()
+        if st.session_state.agents and st.session_state.agents[1]:
+            st.session_state.agents[1].clear_history()
         st.session_state.messages = []
         st.rerun()
 
@@ -234,6 +286,7 @@ with tab1:
                     
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
+                    logger.error(f"Error processing formulation query: {str(e)}")
 
 with tab2:
     st.write("### Chat con experto CIMA")
@@ -298,6 +351,7 @@ with tab2:
                         st.markdown(response["context"])
                 except Exception as e:
                     st.markdown(f"Error: {str(e)}")
+                    logger.error(f"Error in chat response: {str(e)}")
                     
         # Add to session state
         st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
