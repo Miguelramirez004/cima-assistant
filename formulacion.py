@@ -156,14 +156,24 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
     async def get_session(self):
         """Get or create an aiohttp session with keepalive"""
         if self.session is None or self.session.closed:
-            # Using TCPConnector with keepalive and increased limits
+            # Using TCPConnector with proper settings
             connector = aiohttp.TCPConnector(
-                ssl=False, 
-                limit=30,  # Increased connection limit
-                keepalive_timeout=120  # Longer keepalive
+                ssl=False,  
+                limit=10,  # Reduced connection limit to prevent overload
+                keepalive_timeout=60,  # Shorter keepalive period
+                force_close=False  # Don't force close connections
             )
-            timeout = aiohttp.ClientTimeout(total=60)  # Increased timeout to 60 seconds
-            self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
+            timeout = aiohttp.ClientTimeout(
+                total=30,  # Shorter timeout
+                connect=10,
+                sock_connect=10,
+                sock_read=10
+            )
+            self.session = aiohttp.ClientSession(
+                connector=connector, 
+                timeout=timeout,
+                raise_for_status=False  # Don't raise exceptions for HTTP errors
+            )
         return self.session
     
     async def get_medication_details(self, nregistro: str) -> Dict:
@@ -226,22 +236,51 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
             return (key, {"contenido": f"No disponible"})
         
         async def get_prospecto_section(section=None):
-            """Get prospecto content (HTML format)"""
+            """Get prospecto content with improved error handling and multiple methods"""
+            # First try XML format which is more reliable
             url = f"{self.base_url}/docSegmentado/contenido/2"
             params = {"nregistro": nregistro}
             if section:
                 params["seccion"] = section
             
-            headers = {"Accept": "text/html"}
+            # Try without specific Accept header first
             try:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        try:
+                            # Try to parse as JSON first
+                            result = await response.json()
+                            if isinstance(result, dict) and "contenido" in result:
+                                return {"prospecto_html": result.get("contenido", "")}
+                        except:
+                            # If not JSON, try as text
+                            content = await response.text()
+                            return {"prospecto_html": content}
+            except Exception as e:
+                logger.error(f"Error in first prospecto retrieval attempt: {str(e)}")
+            
+            # Try with specific HTML Accept header
+            try:
+                headers = {"Accept": "text/html"}
                 async with session.get(url, params=params, headers=headers) as response:
                     if response.status == 200:
                         content = await response.text()
                         return {"prospecto_html": content}
             except Exception as e:
-                logger.error(f"Error retrieving prospecto HTML: {str(e)}")
+                logger.error(f"Error in second prospecto retrieval attempt: {str(e)}")
             
-            return {"error": "Unable to retrieve prospecto HTML"}
+            # Try alternative endpoint for prospecto
+            try:
+                alt_url = f"{self.base_url}/medicamento/{nregistro}/prospecto"
+                async with session.get(alt_url) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        return {"prospecto_html": content}
+            except Exception as e:
+                logger.error(f"Error in alternative prospecto retrieval: {str(e)}")
+            
+            # Return a fallback to have at least something
+            return {"prospecto_html": f"Prospecto disponible en: https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html"}
         
         # Execute basic info request first - we need this for sure
         basic_info = await get_basic_info()
@@ -250,7 +289,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         # Only fetch sections if we got basic info successfully
         if "error" not in basic_info:
             # Limit concurrent section requests to avoid overwhelming the API
-            semaphore = asyncio.Semaphore(10)  # Max 10 concurrent requests
+            semaphore = asyncio.Semaphore(5)  # Reduced from 10 to 5 concurrent requests
             
             async def limited_section_fetch(section, key):
                 async with semaphore:
@@ -504,17 +543,21 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
             logger.info(f"Found {len(results)} relevant medications, fetching details")
             
             # Fetch details for all medications concurrently
-            semaphore = asyncio.Semaphore(3)  # Limit concurrent requests
+            semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
             
-            async def fetch_med_details(med):
+            async def limited_fetch_med_details(med):
                 async with semaphore:
                     if not isinstance(med, dict) or not med.get("nregistro"):
                         return None
-                    details = await self.get_medication_details(med["nregistro"])
-                    return (med, details)
+                    try:
+                        details = await self.get_medication_details(med["nregistro"])
+                        return (med, details)
+                    except Exception as e:
+                        logger.error(f"Error fetching details for {med.get('nregistro', 'unknown')}: {str(e)}")
+                        return None
             
             # Create tasks for fetching medication details
-            detail_tasks = [fetch_med_details(med) for med in results]
+            detail_tasks = [limited_fetch_med_details(med) for med in results]
             detail_results = await asyncio.gather(*detail_tasks)
             
             # Filter out None results
@@ -658,9 +701,16 @@ Genera una respuesta completa y exhaustiva utilizando toda la información dispo
         }
     
     async def close(self):
-        """Close the aiohttp session to free resources"""
+        """Close the aiohttp session to free resources with proper error handling"""
         if self.session and not self.session.closed:
-            await self.session.close()
+            try:
+                await self.session.close()
+                # Give the event loop time to clean up connections
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Error closing session: {str(e)}")
+                # Ensure session is marked as closed even if there was an error
+                self.session = None
 
 @dataclass
 class CIMAExpertAgent:
@@ -759,14 +809,24 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
     async def get_session(self):
         """Get or create an aiohttp session with keepalive"""
         if self.session is None or self.session.closed:
-            # Using TCPConnector with keepalive and increased limits
+            # Using TCPConnector with proper settings
             connector = aiohttp.TCPConnector(
-                ssl=False, 
-                limit=30,  # Increased connection limit
-                keepalive_timeout=120  # Longer keepalive
+                ssl=False,  
+                limit=10,  # Reduced connection limit to prevent overload
+                keepalive_timeout=60,  # Shorter keepalive period
+                force_close=False  # Don't force close connections
             )
-            timeout = aiohttp.ClientTimeout(total=60)  # Increased timeout to 60 seconds
-            self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
+            timeout = aiohttp.ClientTimeout(
+                total=30,  # Shorter timeout
+                connect=10,
+                sock_connect=10,
+                sock_read=10
+            )
+            self.session = aiohttp.ClientSession(
+                connector=connector, 
+                timeout=timeout,
+                raise_for_status=False  # Don't raise exceptions for HTTP errors
+            )
         return self.session
 
     async def get_medication_info(self, query: str) -> str:
@@ -1064,22 +1124,54 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         if fetch_prospecto:
             async def get_prospecto():
                 try:
-                    # Try the HTML version first for token efficiency
+                    # First try XML format which is more reliable
                     url = f"{self.base_url}/docSegmentado/contenido/2"
                     params = {"nregistro": nregistro}
-                    headers = {"Accept": "text/html"}
+                    
+                    # Try without specific Accept header first
+                    headers = {}
                     async with session.get(url, params=params, headers=headers) as response:
                         if response.status == 200:
-                            content = await response.text()
-                            # Clean and truncate HTML
-                            cleaned = re.sub(r'<[^>]+>', ' ', content)
-                            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-                            if len(cleaned) > 800:
-                                cleaned = cleaned[:797] + "..."
-                            return {"type": "prospecto", "data": cleaned}
+                            try:
+                                # Try to parse as JSON first
+                                result = await response.json()
+                                if isinstance(result, dict) and "contenido" in result:
+                                    content = result.get("contenido", "")
+                                    # Clean and truncate
+                                    cleaned = re.sub(r'<[^>]+>', ' ', content)
+                                    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                                    if len(cleaned) > 800:
+                                        cleaned = cleaned[:797] + "..."
+                                    return {"type": "prospecto", "data": cleaned}
+                            except:
+                                # If not JSON, try as text
+                                content = await response.text()
+                                cleaned = re.sub(r'<[^>]+>', ' ', content)
+                                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                                if len(cleaned) > 800:
+                                    cleaned = cleaned[:797] + "..."
+                                return {"type": "prospecto", "data": cleaned}
+                                
+                    # Try alternative endpoint for prospecto
+                    alt_url = f"{self.base_url}/medicamento/{nregistro}/prospecto"
+                    async with session.get(alt_url) as response:
+                        if response.status == 200:
+                            try:
+                                result = await response.json()
+                                if isinstance(result, dict) and "prospecto" in result:
+                                    content = result.get("prospecto", "")
+                                    cleaned = re.sub(r'<[^>]+>', ' ', content)
+                                    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                                    if len(cleaned) > 800:
+                                        cleaned = cleaned[:797] + "..."
+                                    return {"type": "prospecto", "data": cleaned}
+                            except:
+                                pass
                 except Exception as e:
-                    logger.error(f"Error getting prospecto: {str(e)}")
-                return {"type": "prospecto", "data": "No disponible"}
+                    logger.error(f"Error getting prospecto for {nregistro}: {str(e)}")
+                
+                # Fallback to a simple URL reference if content retrieval fails
+                return {"type": "prospecto", "data": f"Prospecto disponible en: https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html"}
                 
             api_tasks.append(get_prospecto())
         
@@ -1272,6 +1364,13 @@ Contexto relevante de CIMA:
         self.conversation_history = []
         
     async def close(self):
-        """Close the aiohttp session to free resources"""
+        """Close the aiohttp session to free resources with proper error handling"""
         if self.session and not self.session.closed:
-            await self.session.close()
+            try:
+                await self.session.close()
+                # Give the event loop time to clean up connections
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Error closing session: {str(e)}")
+                # Ensure session is marked as closed even if there was an error
+                self.session = None
