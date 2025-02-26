@@ -10,7 +10,12 @@ import re
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional, Set, Tuple, Callable
-from pydantic import BaseModel, Field
+try:
+    # Try importing from pydantic v1 first for better compatibility with LangGraph
+    from pydantic.v1 import BaseModel, Field
+except ImportError:
+    # Fall back to standard import if pydantic v1 not available
+    from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 import aiohttp
 from dataclasses import dataclass, field
