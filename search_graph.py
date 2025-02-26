@@ -26,6 +26,13 @@ MIN_RELEVANCE_THRESHOLD = 20
 # Maximum number of medications to return
 MAX_RESULTS = 5
 
+@dataclass
+class QueryIntent:
+    """Represents the intent of a medication-related query."""
+    intent_type: str  # Type of intent (e.g., "general", "contraindications", "dosage", etc.)
+    description: str  # Human-readable description of the intent
+    section_key: Optional[str] = None  # Optional section key to prioritize
+
 class InformationRequest(BaseModel):
     """Represents a specific information request about a drug."""
     type: str  # Type of information (e.g., "contraindications", "dosage", etc.)
@@ -119,7 +126,7 @@ class MedicationSearchGraph:
         )
     ])
     
-    async def execute_search(self, query_text: str) -> Tuple[List[Dict[str, Any]], str]:
+    async def execute_search(self, query_text: str) -> Tuple[List[Dict[str, Any]], str, Optional[QueryIntent]]:
         """
         Execute a comprehensive search for medications based on the query.
         
@@ -127,10 +134,11 @@ class MedicationSearchGraph:
             query_text: The search query
             
         Returns:
-            Tuple[List[Dict], str]: List of results and quality assessment
+            Tuple[List[Dict], str, Optional[QueryIntent]]: List of results, quality assessment, and query intent
         """
         session = None
         quality = "unknown"
+        query_intent = None
         
         try:
             # Create session
@@ -155,6 +163,41 @@ class MedicationSearchGraph:
             # Analyze the query
             query_info = self._analyze_query(query_text)
             logger.info(f"Query analysis: {query_info.active_principle}, Information request: {query_info.is_information_request}, Type: {query_info.information_request_type}")
+            
+            # Create query intent if this is an information request
+            if query_info.is_information_request and query_info.information_request_type:
+                # Map information request types to section keys and descriptions
+                section_key_map = {
+                    "contraindications": ("contraindicaciones", "contraindicaciones"),
+                    "side_effects": ("efectos_adversos", "efectos adversos"),
+                    "dosage": ("posologia_procedimiento", "posología y administración"),
+                    "interactions": ("interacciones", "interacciones"),
+                    "precautions": ("advertencias", "advertencias y precauciones"),
+                    "indications": ("indicaciones", "indicaciones terapéuticas"),
+                    "administration": ("posologia_procedimiento", "forma de administración"),
+                    "composition": ("composicion", "composición"),
+                    "conservation": ("conservacion", "conservación")
+                }
+                
+                # Get section key and description for this information request type
+                section_key, description = section_key_map.get(
+                    query_info.information_request_type, 
+                    (None, query_info.information_request_type)
+                )
+                
+                # Create query intent
+                query_intent = QueryIntent(
+                    intent_type=query_info.information_request_type,
+                    description=description,
+                    section_key=section_key
+                )
+            else:
+                # Create a general query intent
+                query_intent = QueryIntent(
+                    intent_type="general",
+                    description="información general",
+                    section_key=None
+                )
             
             # Results storage
             all_results = []
@@ -245,11 +288,11 @@ class MedicationSearchGraph:
             logger.info(f"Search completed: {len(filtered_results)} results with quality {quality}")
             
             # Convert to dictionaries for easier integration
-            return [result.dict() for result in filtered_results], quality
+            return [result.dict() for result in filtered_results], quality, query_intent
             
         except Exception as e:
             logger.error(f"Error executing search: {str(e)}")
-            return [], "error"
+            return [], "error", query_intent
         finally:
             # Close session
             if session:
