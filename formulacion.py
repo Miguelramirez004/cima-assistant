@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Any, Union
+from typing import List, Dict, Tuple, Any, Union, Optional
 from openai import AsyncOpenAI
 from config import Config
 import aiohttp
@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime
 import logging
 import tiktoken
-from search_graph import MedicationSearchGraph
+from search_graph import MedicationSearchGraph, QueryIntent
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -142,13 +142,29 @@ Utiliza un lenguaje claro, comprensible para el paciente medio sin conocimientos
 Basa toda la información en los datos proporcionados en el contexto CIMA, citando apropiadamente las fuentes con el formato [Ref X: Nombre del medicamento (Nº Registro)].
 """
 
+    focused_information_prompt = """Experto en información farmacéutica con amplia experiencia en consultas a CIMA.
+
+Has recibido una consulta específica sobre {information_type} de {active_principle}. Proporciona una respuesta directa, clara y detallada centrada específicamente en esta consulta.
+
+Tu respuesta debe:
+1. Comenzar con un resumen conciso de la información solicitada
+2. Proporcionar todos los detalles relevantes sobre {information_type} del medicamento
+3. Incluir referencias específicas a las fuentes CIMA utilizadas, con el formato [Ref X: Nombre del medicamento (Nº Registro)]
+4. Estar estructurada de forma clara con subtítulos si es necesario
+5. Priorizar la información oficial disponible en CIMA
+
+Si hay distintas presentaciones o formas farmacéuticas del medicamento, menciona las diferencias relevantes entre ellas. Si hay información contradictoria, indícalo claramente y justifica qué fuente consideras más fiable.
+
+Utiliza un lenguaje preciso pero accesible, recordando que la persona que consulta puede ser un profesional sanitario o un paciente.
+"""
+
     def __init__(self, openai_client: AsyncOpenAI):
         self.openai_client = openai_client
         self.reference_cache = {}
         self.base_url = Config.CIMA_BASE_URL
         self.session = None
         self.max_tokens = 14000
-        self.use_langgraph = True  # Default to using LangGraph search
+        self.use_langgraph = True  # Default to using improved search
         # Initialize tokenizer
         self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
         # Active principle database - Spanish
@@ -544,8 +560,8 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
             "uppercase_names": med_names
         }
 
-    def format_medication_info(self, index: int, med: Dict, details: Dict) -> str:
-        """Improved medication information formatting for better content extraction"""
+    def format_medication_info(self, index: int, med: Dict, details: Dict, query_intent: Optional[QueryIntent] = None) -> str:
+        """Improved medication information formatting with query intent support"""
         # Basic medication info - with safe access
         basic_info = details.get('basic', {})
         if not isinstance(basic_info, dict):
@@ -567,7 +583,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         lab_titular = basic_info.get('labtitular', med.get('labtitular', 'No disponible'))
         
         # Format sections with proper handling of missing data
-        def get_section_content(section_key, max_len=800):  # Increased max length for more content
+        def get_section_content(section_key, max_len=1000):  # Increased max length for targeted sections
             section_data = details.get(section_key, {})
             if not isinstance(section_data, dict):
                 return "No disponible"
@@ -584,7 +600,33 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                 return content[:max_len] + "... [Contenido truncado, ver ficha técnica completa]"
             return content
         
-        # Include most important sections first
+        # If we have a specific query intent, prioritize that section
+        if query_intent and query_intent.intent_type != "general" and query_intent.section_key:
+            # Create a focused reference highlighting the requested information
+            section_content = get_section_content(query_intent.section_key, 2000)  # Longer content for focused query
+            
+            reference = f"""
+[Referencia {index}: {med_name} (Nº Registro: {nregistro})]
+
+INFORMACIÓN SOBRE {query_intent.description.upper()} DE {med.get('pactivos', basic_info.get('pactivos', 'No disponible')).upper()}:
+
+{section_content}
+
+INFORMACIÓN BÁSICA:
+- Nombre: {med_name}
+- Número de registro: {nregistro}
+- Laboratorio titular: {lab_titular}
+- Principios activos: {med.get('pactivos', basic_info.get('pactivos', 'No disponible'))}
+
+URL FICHA TÉCNICA:
+https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
+
+URL PROSPECTO:
+https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
+"""
+            return reference
+        
+        # Default format for general queries
         reference = f"""
 [Referencia {index}: {med_name} (Nº Registro: {nregistro})]
 
@@ -645,14 +687,20 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
         return reference
 
     async def get_relevant_context(self, query: str, n_results: int = 3) -> str:
-        """Enhanced context retrieval with improved search strategies and LangGraph integration"""
+        """Enhanced context retrieval with improved search strategies and query intent detection"""
         logger.info(f"Getting context for query: '{query}'")
         cache_key = f"{query}_{n_results}"
         
         # Use cache if available
         if cache_key in self.reference_cache:
             cached_results = self.reference_cache[cache_key]
-            context_parts = [self.format_medication_info(i, med, details) 
+            
+            # Extract query intent from cached data if available
+            query_intent = None
+            if len(cached_results) > 0 and len(cached_results[0]) > 2:
+                query_intent = cached_results[0][2]  # Third element is query intent
+                
+            context_parts = [self.format_medication_info(i, med, details, query_intent) 
                             for i, (med, details) in enumerate(cached_results, 1)]
             
             # Calculate token count and truncate if needed
@@ -670,17 +718,17 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
         # Enhanced formulation detection (needed for both search methods)
         formulation_info = self.detect_formulation_type(query)
         
-        # Use LangGraph search if enabled (the new approach)
+        # Use enhanced search implementation
         if self.use_langgraph:
             try:
-                # Create a LangGraph search instance
-                search_graph = MedicationSearchGraph()
+                # Create a search instance
+                search_implementation = MedicationSearchGraph()
                 
                 # Execute the search
-                results, quality = await search_graph.execute_search(query)
+                results, quality, query_intent = await search_implementation.execute_search(query)
                 
                 if results:
-                    logger.info(f"LangGraph search found {len(results)} results with quality: {quality}")
+                    logger.info(f"Enhanced search found {len(results)} results with quality: {quality}")
                     
                     # Get/create aiohttp session
                     session = await self.get_session()
@@ -688,12 +736,12 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                     # Fetch detailed information for each result
                     cached_results = []
                     for med in results:
-                        # Convert LangGraph result to the format expected by format_medication_info
+                        # Convert search result to the format expected by format_medication_info
                         nregistro = med.get("nregistro")
                         if nregistro:
                             try:
                                 details = await self.get_medication_details(nregistro)
-                                cached_results.append((med, details))
+                                cached_results.append((med, details, query_intent))
                             except Exception as e:
                                 logger.error(f"Error fetching details for {nregistro}: {str(e)}")
                     
@@ -702,8 +750,8 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                         self.reference_cache[cache_key] = cached_results
                         
                         # Format content
-                        context_parts = [self.format_medication_info(i, med, details) 
-                                       for i, (med, details) in enumerate(cached_results, 1)]
+                        context_parts = [self.format_medication_info(i, med, details, query_intent) 
+                                       for i, (med, details, _) in enumerate(cached_results, 1)]
                         
                         # Calculate token count and truncate if needed
                         full_context = "\n".join(context_parts)
@@ -718,7 +766,7 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                         
                         return full_context
                 
-                # If LangGraph search returned no results, create a placeholder message
+                # If enhanced search returned no results, create a placeholder message
                 if quality == "no_results" and formulation_info.get("uppercase_names"):
                     uppercase_name = formulation_info["uppercase_names"][0]
                     placeholder = f"""
@@ -735,11 +783,11 @@ Nota: Es posible que este medicamento esté registrado con un nombre ligeramente
 """
                     return placeholder
                 
-                # Fall back to the original search method if LangGraph returned no results
-                logger.info("LangGraph search returned no results, falling back to original search")
+                # Fall back to the original search method if enhanced search returned no results
+                logger.info("Enhanced search returned no results, falling back to original search")
                 
             except Exception as e:
-                logger.error(f"Error in LangGraph search, falling back to original method: {str(e)}")
+                logger.error(f"Error in enhanced search, falling back to original method: {str(e)}")
                 # Continue with original search method
         
         # Original search method implementation
@@ -1059,13 +1107,24 @@ Nota: Es posible que este medicamento esté registrado con un nombre ligeramente
         # Eliminate duplicates
         return list(set(potential_terms))
 
-    async def generate_response(self, query: str, context: str) -> str:
-        """Generate response with selected system prompt based on query type"""
+    async def generate_response(self, query: str, context: str, query_intent: Optional[QueryIntent] = None) -> str:
+        """Generate response with selected system prompt based on query type and intent"""
         # Extract formulation details for improved prompting
         formulation_info = self.detect_formulation_type(query)
         
         # Select the appropriate system prompt based on query type
-        system_prompt = self.prospecto_prompt if formulation_info["is_prospecto"] else self.system_prompt
+        if formulation_info["is_prospecto"]:
+            system_prompt = self.prospecto_prompt
+        elif query_intent and query_intent.intent_type != "general":
+            # Create a focused prompt for specific information queries
+            active_principle = formulation_info.get("active_principle", "el medicamento")
+            system_prompt = self.focused_information_prompt.replace(
+                "{information_type}", query_intent.description
+            ).replace(
+                "{active_principle}", active_principle
+            )
+        else:
+            system_prompt = self.system_prompt
         
         # Count tokens before creating prompt
         system_tokens = self.num_tokens(system_prompt)
@@ -1087,13 +1146,29 @@ DETALLES DE LA CONSULTA:
 - Principio(s) activo(s): {formulation_info["active_principle"]}
 - Concentración solicitada: {formulation_info["concentration"] if formulation_info["concentration"] else "No especificada"}
 - Es solicitud de prospecto: {"Sí" if formulation_info["is_prospecto"] else "No"}
+"""
 
+        # Add intent information if available
+        if query_intent and query_intent.intent_type != "general":
+            prompt += f"""- Tipo de información solicitada: {query_intent.description}
+- Sección de interés: {query_intent.section_key}
+"""
+
+        # Add the original query
+        prompt += f"""
 CONSULTA ORIGINAL:
 {query}
 
 Genera una respuesta completa y exhaustiva utilizando toda la información disponible en el contexto. Cita las fuentes CIMA usando el formato [Ref X: Nombre del medicamento (Nº Registro)].
 
 Si no encuentras información suficiente en el contexto, indícalo claramente y sugiere consultar directamente la ficha técnica a través de los enlaces proporcionados.
+"""
+
+        # If it's a specific information query, add extra instructions
+        if query_intent and query_intent.intent_type != "general":
+            prompt += f"""
+Dado que la consulta es específicamente sobre {query_intent.description}, 
+centra tu respuesta en esta información y proporciona todos los detalles relevantes de manera clara y directa.
 """
 
         prompt_tokens = self.num_tokens(prompt)
@@ -1119,8 +1194,12 @@ Si no encuentras información suficiente en el contexto, indícalo claramente y 
             raise Exception(f"Error al generar la respuesta: {str(e)}")
 
     async def answer_question(self, question: str) -> Dict[str, str]:
+        # Get context with improved query understanding
+        search_implementation = MedicationSearchGraph()
+        results, quality, query_intent = await search_implementation.execute_search(question)
+        
         context = await self.get_relevant_context(question)
-        answer = await self.generate_response(question, context)
+        answer = await self.generate_response(question, context, query_intent)
         
         # Create direct links for references in response
         pattern = r'\[Ref (\d+): ([^()]+) \(Nº Registro: (\d+)\)\]'
@@ -1164,7 +1243,7 @@ class CIMAExpertAgent:
     base_url: str = Config.CIMA_BASE_URL
     session: aiohttp.ClientSession = None
     max_tokens: int = 14000  # Reserve tokens for prompt and response
-    use_langgraph: bool = True  # Use LangGraph search by default
+    use_langgraph: bool = True  # Use improved search by default
     
     system_prompt = """Eres un experto farmacéutico especializado en medicamentos registrados en CIMA (Centro de Información online de Medicamentos de la AEMPS).
 
@@ -1190,6 +1269,21 @@ Si se menciona un medicamento concreto, prioriza la información sobre ese medic
 Para consultas muy específicas sobre formulación magistral, recomienda consultar la pestaña "Formulación Magistral" de esta aplicación.
 
 Responde de manera profesional pero accesible, recordando que tus respuestas pueden ser leídas tanto por profesionales sanitarios como por pacientes.
+"""
+    
+    focused_system_prompt = """Eres un experto farmacéutico especializado en información sobre {information_type} de medicamentos registrados en CIMA.
+
+Has recibido una consulta específica sobre {information_type} de {active_principle}. Responde de manera clara, directa y completa, centrándote exclusivamente en esta consulta.
+
+La información debe estar basada exclusivamente en los datos oficiales de CIMA. Cita las fuentes utilizando el formato: [Ref X: Nombre del medicamento (Nº Registro)].
+
+Estructura tu respuesta de manera lógica:
+1. Comienza con un resumen conciso de la información solicitada
+2. Proporciona los detalles completos, organizados por puntos o párrafos según sea más apropiado
+3. Incluye cualquier advertencia o consideración especial relevante
+4. Concluye con recomendaciones generales si son pertinentes
+
+Utiliza un lenguaje preciso pero accesible, recordando que tu respuesta puede ser leída tanto por profesionales sanitarios como por pacientes.
 """
     
     def __init__(self, openai_client: AsyncOpenAI):
@@ -1258,6 +1352,10 @@ Responde de manera profesional pero accesible, recordando que tus respuestas pue
         formulation_agent.use_langgraph = self.use_langgraph  # Use same search method
         
         try:
+            # Get intent from enhanced search
+            search_implementation = MedicationSearchGraph()
+            results, quality, query_intent = await search_implementation.execute_search(query)
+            
             # Get context using the FormulationAgent's enhanced methods
             context = await formulation_agent.get_relevant_context(query, n_results=3)
             
@@ -1268,6 +1366,22 @@ Responde de manera profesional pero accesible, recordando que tus respuestas pue
                 for msg in self.conversation_history[-3:]:  # Only use last 3 messages for context
                     role = "Usuario" if msg["role"] == "user" else "Asistente"
                     history_text += f"{role}: {msg['content']}\n\n"
+            
+            # Determine if we should use the focused system prompt
+            if query_intent and query_intent.intent_type != "general":
+                # Get formulation info to extract active principle
+                formulation_info = formulation_agent.detect_formulation_type(query)
+                active_principle = formulation_info.get("active_principle", "el medicamento")
+                
+                # Use focused system prompt
+                system_prompt = self.focused_system_prompt.replace(
+                    "{information_type}", query_intent.description
+                ).replace(
+                    "{active_principle}", active_principle
+                )
+            else:
+                # Use general system prompt
+                system_prompt = self.system_prompt
             
             # Create prompt
             prompt = f"""
@@ -1280,7 +1394,18 @@ CONTEXTO DE CIMA:
 
 CONSULTA ACTUAL:
 {query}
+"""
 
+            # Add intent information if available
+            if query_intent and query_intent.intent_type != "general":
+                prompt += f"""
+TIPO DE INFORMACIÓN SOLICITADA: {query_intent.description}
+
+Dado que el usuario está preguntando específicamente sobre {query_intent.description} de un medicamento,
+centra tu respuesta en proporcionar información detallada y completa sobre este aspecto.
+"""
+
+            prompt += """
 Proporciona información detallada y precisa basada en los datos de CIMA. Cita las fuentes utilizando el formato [Ref X: Nombre del medicamento (Nº Registro)].
 Si desconoces la respuesta o no hay información suficiente en el contexto, indícalo claramente.
 """
@@ -1289,7 +1414,7 @@ Si desconoces la respuesta o no hay información suficiente en el contexto, ind�
             chat_completion = await self.openai_client.chat.completions.create(
                 model=Config.CHAT_MODEL,
                 messages=[
-                    {"role": "system", "content": self.system_prompt},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7
