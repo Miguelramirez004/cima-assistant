@@ -26,6 +26,12 @@ MIN_RELEVANCE_THRESHOLD = 20
 # Maximum number of medications to return
 MAX_RESULTS = 5
 
+class QueryIntent(BaseModel):
+    """Information about what type of data the user is looking for."""
+    intent_type: str = "general"  # general, contraindications, dosage, side_effects, etc.
+    section_key: Optional[str] = None  # Corresponding section in CIMA API
+    description: str = "Información general"
+
 class MedicationQuery(BaseModel):
     """Structured representation of a medication search query."""
     query_text: str
@@ -36,6 +42,7 @@ class MedicationQuery(BaseModel):
     uppercase_names: List[str] = Field(default_factory=list)
     search_terms: List[str] = Field(default_factory=list)
     is_prospecto: bool = False
+    query_intent: QueryIntent = Field(default_factory=QueryIntent)
     
 class MedicationResult(BaseModel):
     """Structured representation of a medication search result."""
@@ -72,7 +79,59 @@ class MedicationSearchGraph:
         "vitamina d", "calcio", "hierro", "insulina", "metronidazol", "minoxidil"
     ])
     
-    async def execute_search(self, query_text: str) -> Tuple[List[Dict[str, Any]], str]:
+    intent_mapping: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
+        # Map common query terms to CIMA sections
+        "contraindicacion": {
+            "intent_type": "contraindications",
+            "section_key": "contraindicaciones",
+            "description": "Contraindicaciones",
+            "keywords": ["contraindicacion", "contraindicaciones", "no usar", "no debe"]
+        },
+        "posologia": {
+            "intent_type": "dosage",
+            "section_key": "posologia_procedimiento",
+            "description": "Posología y administración",
+            "keywords": ["posologia", "dosis", "administracion", "tomar", "como"]
+        },
+        "efecto_adverso": {
+            "intent_type": "side_effects",
+            "section_key": "efectos_adversos",
+            "description": "Efectos adversos",
+            "keywords": ["efecto adverso", "efectos adversos", "secundario", "reaccion"]
+        },
+        "interaccion": {
+            "intent_type": "interactions",
+            "section_key": "interacciones",
+            "description": "Interacciones con otros medicamentos",
+            "keywords": ["interaccion", "interacciones", "interactua"]
+        },
+        "indicacion": {
+            "intent_type": "indications",
+            "section_key": "indicaciones",
+            "description": "Indicaciones terapéuticas",
+            "keywords": ["indicacion", "indicaciones", "sirve para", "trata", "tratar"]
+        },
+        "composicion": {
+            "intent_type": "composition",
+            "section_key": "composicion",
+            "description": "Composición",
+            "keywords": ["composicion", "excipiente", "excipientes", "contiene"]
+        },
+        "advertencia": {
+            "intent_type": "warnings",
+            "section_key": "advertencias",
+            "description": "Advertencias y precauciones",
+            "keywords": ["advertencia", "advertencias", "precaucion", "precauciones"]
+        },
+        "embarazo": {
+            "intent_type": "pregnancy",
+            "section_key": "embarazo_lactancia",
+            "description": "Embarazo y lactancia",
+            "keywords": ["embarazo", "gestacion", "lactancia", "amamantar"]
+        }
+    })
+    
+    async def execute_search(self, query_text: str) -> Tuple[List[Dict[str, Any]], str, Optional[QueryIntent]]:
         """
         Execute a comprehensive search for medications based on the query.
         
@@ -80,7 +139,7 @@ class MedicationSearchGraph:
             query_text: The search query
             
         Returns:
-            Tuple[List[Dict], str]: List of results and quality assessment
+            Tuple[List[Dict], str, QueryIntent]: List of results, quality assessment, and query intent
         """
         session = None
         quality = "unknown"
@@ -180,11 +239,11 @@ class MedicationSearchGraph:
             logger.info(f"Search completed: {len(filtered_results)} results with quality {quality}")
             
             # Convert to dictionaries for easier integration
-            return [result.dict() for result in filtered_results], quality
+            return [result.dict() for result in filtered_results], quality, query_info.query_intent
             
         except Exception as e:
             logger.error(f"Error executing search: {str(e)}")
-            return [], "error"
+            return [], "error", None
         finally:
             # Close session
             if session:
@@ -194,7 +253,7 @@ class MedicationSearchGraph:
                     logger.error(f"Error closing session: {str(e)}")
     
     def _analyze_query(self, query_text: str) -> MedicationQuery:
-        """Analyze the query to extract structured search parameters."""
+        """Analyze the query to extract structured search parameters and intent."""
         query_lower = query_text.lower()
         
         # Extract uppercase medication names
@@ -258,6 +317,9 @@ class MedicationSearchGraph:
         prospecto_pattern = r'(?:redactar|generar|crear|elaborar|realizar?e?|escrib[ei]r|hac[ae]r|desarroll[ae]r|realiza(?:r|)|prepar(?:ar|a))\s+(?:un|el|uns?|una?)?\s+prospecto'
         is_prospecto = bool(re.search(prospecto_pattern, query_lower))
         
+        # Identify query intent (what information the user is looking for)
+        query_intent = self._determine_query_intent(query_lower)
+        
         # Create and return the query object
         return MedicationQuery(
             query_text=query_text,
@@ -267,8 +329,34 @@ class MedicationSearchGraph:
             concentration=concentration,
             uppercase_names=uppercase_names,
             search_terms=search_terms,
-            is_prospecto=is_prospecto
+            is_prospecto=is_prospecto,
+            query_intent=query_intent
         )
+    
+    def _determine_query_intent(self, query_text: str) -> QueryIntent:
+        """
+        Determine what type of information the user is looking for.
+        This is used to highlight the relevant sections in the response.
+        
+        Example: "contraindicaciones ibuprofeno" -> focus on contraindications section
+        """
+        query_lower = query_text.lower()
+        
+        # Default to general intent
+        intent = QueryIntent()
+        
+        # Check for specific intents based on keywords
+        for key, intent_data in self.intent_mapping.items():
+            # Check each keyword for this intent
+            for keyword in intent_data["keywords"]:
+                if keyword in query_lower:
+                    return QueryIntent(
+                        intent_type=intent_data["intent_type"],
+                        section_key=intent_data["section_key"],
+                        description=intent_data["description"]
+                    )
+        
+        return intent
     
     async def _search_by_uppercase(self, session: aiohttp.ClientSession, query: MedicationQuery) -> List[MedicationResult]:
         """Search for exact matches with uppercase medication names."""
