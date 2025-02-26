@@ -9,6 +9,7 @@ import asyncio
 from datetime import datetime
 import logging
 import tiktoken
+from search_graph import MedicationSearchGraph
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,6 +22,7 @@ class FormulationAgent:
     reference_cache: Dict[str, List[Dict]] = field(default_factory=dict)
     session: aiohttp.ClientSession = None
     max_tokens: int = 14000  # Leave room for prompt and response
+    use_langgraph: bool = True  # Use the new LangGraph search by default
 
     system_prompt = """Farmacéutico especialista en formulación magistral con amplio conocimiento en CIMA. 
 Genera formulaciones magistrales detalladas y precisas basadas en la información proporcionada por CIMA.
@@ -146,6 +148,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         self.base_url = Config.CIMA_BASE_URL
         self.session = None
         self.max_tokens = 14000
+        self.use_langgraph = True  # Default to using LangGraph search
         # Initialize tokenizer
         self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
         # Active principle database - Spanish
@@ -642,35 +645,11 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
         return reference
 
     async def get_relevant_context(self, query: str, n_results: int = 3) -> str:
-        """Enhanced context retrieval with improved search strategies"""
+        """Enhanced context retrieval with improved search strategies and LangGraph integration"""
         logger.info(f"Getting context for query: '{query}'")
         cache_key = f"{query}_{n_results}"
         
-        # Enhanced formulation detection
-        formulation_info = self.detect_formulation_type(query)
-        formulation_type = formulation_info["form_type"]
-        active_principle = formulation_info["active_principle"]
-        is_prospecto = formulation_info["is_prospecto"]
-        uppercase_names = formulation_info.get("uppercase_names", [])
-        
-        # Extract medication name from prospecto request
-        if is_prospecto:
-            # Try to extract medication name using patterns
-            med_patterns = [
-                r'(?:sobre|de|para|con)\s+(?:la|el|los|las)?\s*([a-zA-Z\-áéíóúÁÉÍÓÚñÑ]+(?:\s+[a-zA-Z\-áéíóúÁÉÍÓÚñÑ]+){0,3})\s+(\d+(?:[,.]\d+)?\s*(?:mg|g|ml|mcg|UI|%|unidades))',  # With concentration
-                r'(?:sobre|de|para|con)\s+(?:la|el|los|las)?\s*([a-zA-Z\-áéíóúÁÉÍÓÚñÑ]+(?:\s+[a-zA-Z\-áéíóúÁÉÍÓÚñÑ]+){0,3})',  # Without concentration
-                r'prospecto\s+(?:sobre|de|para|con)?\s+(?:la|el|los|las)?\s*([a-zA-Z\-áéíóúÁÉÍÓÚñÑ]+(?:\s+[a-zA-Z\-áéíóúÁÉÍÓÚñÑ]+){0,3})'  # After prospecto
-            ]
-            
-            for pattern in med_patterns:
-                match = re.search(pattern, query.lower())
-                if match:
-                    extracted_term = match.group(1).strip()
-                    if len(extracted_term) > 3:  # Avoid short/common words
-                        active_principle = extracted_term
-                        logger.info(f"Extracted medication term from prospecto request: '{active_principle}'")
-                        break
-        
+        # Use cache if available
         if cache_key in self.reference_cache:
             cached_results = self.reference_cache[cache_key]
             context_parts = [self.format_medication_info(i, med, details) 
@@ -688,13 +667,89 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                 return smaller_context
             return full_context
 
+        # Enhanced formulation detection (needed for both search methods)
+        formulation_info = self.detect_formulation_type(query)
+        
+        # Use LangGraph search if enabled (the new approach)
+        if self.use_langgraph:
+            try:
+                # Create a LangGraph search instance
+                search_graph = MedicationSearchGraph()
+                
+                # Execute the search
+                results, quality = await search_graph.execute_search(query)
+                
+                if results:
+                    logger.info(f"LangGraph search found {len(results)} results with quality: {quality}")
+                    
+                    # Get/create aiohttp session
+                    session = await self.get_session()
+                    
+                    # Fetch detailed information for each result
+                    cached_results = []
+                    for med in results:
+                        # Convert LangGraph result to the format expected by format_medication_info
+                        nregistro = med.get("nregistro")
+                        if nregistro:
+                            try:
+                                details = await self.get_medication_details(nregistro)
+                                cached_results.append((med, details))
+                            except Exception as e:
+                                logger.error(f"Error fetching details for {nregistro}: {str(e)}")
+                    
+                    # Store in cache
+                    if cached_results:
+                        self.reference_cache[cache_key] = cached_results
+                        
+                        # Format content
+                        context_parts = [self.format_medication_info(i, med, details) 
+                                       for i, (med, details) in enumerate(cached_results, 1)]
+                        
+                        # Calculate token count and truncate if needed
+                        full_context = "\n".join(context_parts)
+                        if self.num_tokens(full_context) > self.max_tokens:
+                            logger.info(f"Context too large ({self.num_tokens(full_context)} tokens), truncating...")
+                            # Use fewer results
+                            smaller_context = "\n".join(context_parts[:2])
+                            if self.num_tokens(smaller_context) > self.max_tokens:
+                                # Truncate even more - just use most relevant result
+                                return context_parts[0]
+                            return smaller_context
+                        
+                        return full_context
+                
+                # If LangGraph search returned no results, create a placeholder message
+                if quality == "no_results" and formulation_info.get("uppercase_names"):
+                    uppercase_name = formulation_info["uppercase_names"][0]
+                    placeholder = f"""
+[Referencia: {uppercase_name} (No encontrado en CIMA)]
+
+No se encontraron resultados exactos para '{uppercase_name}' en CIMA utilizando la búsqueda avanzada.
+
+Sugerencias:
+- Verificar el nombre exacto del medicamento
+- Intentar buscar por principio activo: {formulation_info["active_principle"] if formulation_info["active_principle"] else "No detectado"}
+- Consultar directamente en la web oficial: https://cima.aemps.es/
+
+Nota: Es posible que este medicamento esté registrado con un nombre ligeramente diferente o que sea un medicamento extranjero no incluido en CIMA.
+"""
+                    return placeholder
+                
+                # Fall back to the original search method if LangGraph returned no results
+                logger.info("LangGraph search returned no results, falling back to original search")
+                
+            except Exception as e:
+                logger.error(f"Error in LangGraph search, falling back to original method: {str(e)}")
+                # Continue with original search method
+        
+        # Original search method implementation
         # Get/create aiohttp session
         session = await self.get_session()
         
         # Check if the query is an exact medication name in uppercase (like "MINOXIDIL BIORGA")
-        # This special handling improves results for specific medication names
+        uppercase_names = formulation_info.get("uppercase_names", [])
         if uppercase_names:
-            logger.info(f"Detected uppercase medication name pattern: {uppercase_names[0]}")
+            logger.info(f"Original method: Detected uppercase medication name pattern: {uppercase_names[0]}")
             # Try direct search for the medication first
             try:
                 search_url = f"{self.base_url}/medicamentos"
@@ -716,7 +771,7 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                 logger.error(f"Error in direct uppercase medication search: {str(e)}")
         
         # Execute search with multiple strategies
-        all_results = await self._comprehensive_medication_search(session, query, active_principle, formulation_type)
+        all_results = await self._comprehensive_medication_search(session, query, formulation_info.get("active_principle"), formulation_info.get("form_type"))
         
         # Limit results to requested number
         results = all_results[:n_results]
@@ -776,7 +831,7 @@ No se encontraron resultados exactos para '{uppercase_names[0]}' en CIMA.
 
 Sugerencias:
 - Verificar el nombre exacto del medicamento
-- Intentar buscar por principio activo: {active_principle if active_principle else "No detectado"}
+- Intentar buscar por principio activo: {formulation_info.get("active_principle") if formulation_info.get("active_principle") else "No detectado"}
 - Consultar directamente en la web oficial: https://cima.aemps.es/
 
 Nota: Es posible que este medicamento esté registrado con un nombre ligeramente diferente o que sea un medicamento extranjero no incluido en CIMA.
@@ -1109,6 +1164,7 @@ class CIMAExpertAgent:
     base_url: str = Config.CIMA_BASE_URL
     session: aiohttp.ClientSession = None
     max_tokens: int = 14000  # Reserve tokens for prompt and response
+    use_langgraph: bool = True  # Use LangGraph search by default
     
     system_prompt = """Eres un experto farmacéutico especializado en medicamentos registrados en CIMA (Centro de Información online de Medicamentos de la AEMPS).
 
@@ -1143,6 +1199,7 @@ Responde de manera profesional pero accesible, recordando que tus respuestas pue
         self.conversation_history = []
         self.session = None
         self.max_tokens = 14000
+        self.use_langgraph = True
         # Initialize tokenizer
         self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
         # Active principle database - Spanish
@@ -1198,6 +1255,7 @@ Responde de manera profesional pero accesible, recordando que tus respuestas pue
         # Reuse the FormulationAgent's context retrieval logic
         formulation_agent = FormulationAgent(self.openai_client)
         formulation_agent.session = await self.get_session()  # Share session for efficiency
+        formulation_agent.use_langgraph = self.use_langgraph  # Use same search method
         
         try:
             # Get context using the FormulationAgent's enhanced methods
