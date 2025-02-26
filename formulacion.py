@@ -1110,6 +1110,32 @@ class CIMAExpertAgent:
     session: aiohttp.ClientSession = None
     max_tokens: int = 14000  # Reserve tokens for prompt and response
     
+    system_prompt = """Eres un experto farmacéutico especializado en medicamentos registrados en CIMA (Centro de Información online de Medicamentos de la AEMPS).
+
+Tu objetivo es proporcionar información precisa y detallada sobre medicamentos en respuesta a las consultas del usuario. Debes:
+
+1. Responder con información basada exclusivamente en los datos oficiales de CIMA
+2. Citar las fuentes utilizando el formato: [Ref X: Nombre del medicamento (Nº Registro)]
+3. Explicar la información de manera clara y estructurada
+4. Proporcionar enlaces a las fichas técnicas y prospectos cuando sea relevante
+5. Advertir cuando la información consultada no esté disponible en CIMA
+
+Tipos de consultas que puedes responder:
+- Indicaciones y contraindicaciones de medicamentos
+- Posología y forma de administración
+- Composición y excipientes
+- Efectos adversos y precauciones
+- Datos de conservación y caducidad
+- Comparativas entre medicamentos similares
+- Alternativas terapéuticas dentro del mismo grupo
+
+Si se menciona un medicamento concreto, prioriza la información sobre ese medicamento específico. Si la consulta es general, proporciona información sobre los medicamentos más representativos o utilizados para esa indicación.
+
+Para consultas muy específicas sobre formulación magistral, recomienda consultar la pestaña "Formulación Magistral" de esta aplicación.
+
+Responde de manera profesional pero accesible, recordando que tus respuestas pueden ser leídas tanto por profesionales sanitarios como por pacientes.
+"""
+    
     def __init__(self, openai_client: AsyncOpenAI):
         self.openai_client = openai_client
         self.reference_cache = {}
@@ -1134,7 +1160,12 @@ class CIMAExpertAgent:
             "vitamina d", "calcio", "hierro", "insulina", "metronidazol",
             "minoxidil"
         ]
-
+    
+    def clear_history(self):
+        """Clear the conversation history"""
+        self.conversation_history = []
+        logger.info("Conversation history cleared")
+    
     def num_tokens(self, text: str) -> int:
         """Calculate the number of tokens in a string"""
         return len(self.tokenizer.encode(text))
@@ -1161,3 +1192,91 @@ class CIMAExpertAgent:
                 raise_for_status=False  # Don't raise exceptions for HTTP errors
             )
         return self.session
+    
+    async def chat(self, query: str) -> Dict[str, str]:
+        """Process a chat query with CIMA context"""
+        # Reuse the FormulationAgent's context retrieval logic
+        formulation_agent = FormulationAgent(self.openai_client)
+        formulation_agent.session = await self.get_session()  # Share session for efficiency
+        
+        try:
+            # Get context using the FormulationAgent's enhanced methods
+            context = await formulation_agent.get_relevant_context(query, n_results=3)
+            
+            # Create chat history context
+            history_text = ""
+            if self.conversation_history:
+                history_text = "HISTORIAL DE CONVERSACIÓN:\n"
+                for msg in self.conversation_history[-3:]:  # Only use last 3 messages for context
+                    role = "Usuario" if msg["role"] == "user" else "Asistente"
+                    history_text += f"{role}: {msg['content']}\n\n"
+            
+            # Create prompt
+            prompt = f"""
+Analiza el siguiente contexto y el historial de conversación para responder a la consulta del usuario:
+
+CONTEXTO DE CIMA:
+{context}
+
+{history_text}
+
+CONSULTA ACTUAL:
+{query}
+
+Proporciona información detallada y precisa basada en los datos de CIMA. Cita las fuentes utilizando el formato [Ref X: Nombre del medicamento (Nº Registro)].
+Si desconoces la respuesta o no hay información suficiente en el contexto, indícalo claramente.
+"""
+            
+            # Generate response
+            chat_completion = await self.openai_client.chat.completions.create(
+                model=Config.CHAT_MODEL,
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+            
+            answer = chat_completion.choices[0].message.content
+            
+            # Create direct links for references in response
+            pattern = r'\[Ref (\d+): ([^()]+) \(Nº Registro: (\d+)\)\]'
+            
+            def replace_with_link(match):
+                ref_num = match.group(1)
+                med_name = match.group(2)
+                reg_num = match.group(3)
+                return f'[Ref {ref_num}: {med_name} (Nº Registro: {reg_num})](https://cima.aemps.es/cima/dochtml/ft/{reg_num}/FT_{reg_num}.html)'
+            
+            answer_with_links = re.sub(pattern, replace_with_link, answer)
+            
+            # Update conversation history
+            self.conversation_history.append({"role": "user", "content": query})
+            self.conversation_history.append({"role": "assistant", "content": answer_with_links})
+            
+            # Ensure we don't keep too much history
+            if len(self.conversation_history) > 10:
+                self.conversation_history = self.conversation_history[-10:]
+            
+            return {
+                "answer": answer_with_links,
+                "context": context
+            }
+        except Exception as e:
+            logger.error(f"Error in chat: {str(e)}")
+            raise
+        finally:
+            # Don't close the shared session here, let the main application manage it
+            pass
+    
+    async def close(self):
+        """Close the aiohttp session to free resources with proper error handling"""
+        if self.session and not self.session.closed:
+            try:
+                await self.session.close()
+                # Give the event loop time to clean up connections
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Error closing session: {str(e)}")
+                # Ensure session is marked as closed even if there was an error
+                self.session = None
