@@ -137,7 +137,9 @@ Cuando se solicite redactar un prospecto completo, deberás generar un documento
 
 Utiliza un lenguaje claro, comprensible para el paciente medio sin conocimientos médicos. Estructura el texto con encabezados numerados. Evita terminología técnica innecesaria pero mantén la precisión científica.
 
-Basa toda la información en los datos proporcionados en el contexto CIMA, citando apropiadamente las fuentes con el formato [Ref X: Nombre del medicamento (Nº Registro)].
+Basa toda la información en los datos proporcionados en el contexto CIMA, citando apropiadamente las fuentes con el formato [Ref: Nombre del medicamento (Nº Registro)].
+
+Si no hay información disponible en CIMA sobre el medicamento solicitado, proporciona una explicación clara y ofrece sugerencias alternativas basadas en conocimientos generales. Indica claramente que esta información no proviene de CIMA y que debe ser verificada por un profesional sanitario.
 """
 
     def __init__(self, openai_client: AsyncOpenAI):
@@ -325,7 +327,7 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         concentration_pattern = r'(\d+(?:[,.]\d+)?)\s*(%|mg|g|ml|mcg|UI|unidades)'
         
         # Special request patterns - Enhanced to catch all variants
-        prospecto_pattern = r'(?:redactar|generar|crear|elaborar|realizar?e?|escrib[ei]r|hac[ae]r|desarroll[ae]r)\s+(?:un|el|uns?|una?)?\s+prospecto'
+        prospecto_pattern = r'(?:redactar|generar|crear|elaborar|realizar?e?|escrib[ei]r|hac[ae]r|desarroll[ae]r|realizar?|prosp)\s+(?:un|el|uns?|una?)?\s+(?:prospecto|prosp)'
         
         # Process query
         query_lower = query.lower()
@@ -478,6 +480,15 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                         active_principle = extracted_term
                         logger.info(f"Extracted medication term from prospecto request: '{active_principle}'")
                         break
+            
+            # If no active ingredient found, extract from the query directly
+            if not active_principle or active_principle == "":
+                words = query.split()
+                for word in words:
+                    if len(word) > 4 and word.lower() not in {"prospecto", "generar", "crear", "realizar", "redactar", "elaborar"}:
+                        active_principle = word
+                        logger.info(f"Extracted potential medication term from query: '{active_principle}'")
+                        break
         
         if cache_key in self.reference_cache:
             cached_results = self.reference_cache[cache_key]
@@ -500,6 +511,17 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
         session = await self.get_session()
         search_url = f"{self.base_url}/medicamentos"
         
+        # Build search terms from the query
+        search_terms = self._extract_search_terms(query)
+        if active_principle and active_principle not in search_terms and len(active_principle) > 3:
+            search_terms.insert(0, active_principle)  # Add active principle to the beginning if not already included
+        
+        logger.info(f"Search terms extracted: {search_terms}")
+        
+        # Get common medication search terms
+        common_medications = self._get_common_medications()
+        found_medications = [term for term in search_terms if term.lower() in common_medications]
+        
         # Perform searches concurrently
         async def search_medications(params):
             try:
@@ -509,38 +531,110 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                         if isinstance(data, dict) and "resultados" in data:
                             results = data.get("resultados", [])
                             logger.info(f"Search with params {params} returned {len(results)} results")
+                            # Filter results to ensure they are relevant
+                            if params.get("principiosActivos") or params.get("nombre"):
+                                search_term = params.get("principiosActivos", params.get("nombre", "")).lower()
+                                filtered_results = self._filter_relevant_results(results, search_term)
+                                return filtered_results
                             return results
             except Exception as e:
                 logger.error(f"Error in search with params {params}: {str(e)}")
             return []
         
-        # Execute the most important searches concurrently
-        search_tasks = [
-            search_medications({"nombre": query}),
-            search_medications({"principiosActivos": active_principle}),
-            search_medications({"formaFarmaceutica": formulation_type})
-        ]
+        # Build search tasks prioritizing more specific searches
+        search_tasks = []
         
+        # Primary search: by active principle or medication name
+        if found_medications:
+            for med in found_medications[:2]:  # Limit to top 2 known medications
+                search_tasks.append(search_medications({"principiosActivos": med}))
+                search_tasks.append(search_medications({"nombre": med}))
+        
+        # Secondary search: by all extracted terms
+        for term in search_terms[:3]:  # Limit to top 3 terms
+            search_tasks.append(search_medications({"principiosActivos": term}))
+            search_tasks.append(search_medications({"nombre": term}))
+        
+        # Tertiary search: by formulation type if we have an identifiable one
+        if formulation_type:
+            search_tasks.append(search_medications({"formaFarmaceutica": formulation_type}))
+        
+        # Execute searches concurrently
         search_results = await asyncio.gather(*search_tasks)
         
-        # Combine results, avoiding duplicates
+        # Combine results, avoiding duplicates and prioritizing by relevance
         all_results = []
         seen_nregistros = set()
         
+        # Function to evaluate relevance to the query
+        def relevance_score(med, query_terms):
+            score = 0
+            
+            # Get the medication name and active ingredients
+            med_name = med.get('nombre', '').lower()
+            pactivos = med.get('pactivos', '').lower()
+            
+            # Check each term for presence in the medication name or active ingredients
+            for term in query_terms:
+                term = term.lower()
+                if term in med_name:
+                    score += 10  # Higher score for match in name
+                if term in pactivos:
+                    score += 8   # Good score for match in active ingredients
+                
+            # Prioritize medications that contain the exact term
+            for term in query_terms:
+                if term.lower() == med_name.lower() or term.lower() == pactivos.lower():
+                    score += 20  # Exact match gets a big boost
+                    
+            return score
+        
+        # Process search results and sort by relevance
+        scored_results = []
         for results in search_results:
             for med in results:
                 if isinstance(med, dict) and med.get("nregistro"):
                     nregistro = med.get("nregistro")
                     if nregistro not in seen_nregistros:
                         seen_nregistros.add(nregistro)
-                        all_results.append(med)
+                        score = relevance_score(med, search_terms)
+                        scored_results.append((med, score))
+        
+        # Sort by relevance score (highest first)
+        scored_results.sort(key=lambda x: x[1], reverse=True)
+        
+        # Take the top results
+        all_results = [med for med, score in scored_results if score > 0][:n_results]
+        
+        # If we still don't have enough results, add from the original results
+        if len(all_results) < n_results:
+            for results in search_results:
+                for med in results:
+                    if isinstance(med, dict) and med.get("nregistro"):
+                        nregistro = med.get("nregistro")
+                        if nregistro not in seen_nregistros:
+                            seen_nregistros.add(nregistro)
+                            all_results.append(med)
+                            if len(all_results) >= n_results:
+                                break
+                if len(all_results) >= n_results:
+                    break
         
         # Limit results to requested number
         results = all_results[:n_results]
         cached_results = []
 
         if results:
-            logger.info(f"Found {len(results)} relevant medications, fetching details")
+            # First verify if any of the results are actually relevant
+            relevant_results = [med for med in results if self._is_relevant_medication(med, query, search_terms)]
+            
+            if not relevant_results:
+                # No relevant results found
+                if is_prospecto:
+                    return self._generate_not_found_message(active_principle, formulation_info["concentration"])
+                return "No se encontraron medicamentos relevantes para esta consulta en la base de datos CIMA."
+            
+            logger.info(f"Found {len(relevant_results)} relevant medications, fetching details")
             
             # Fetch details for all medications concurrently
             semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
@@ -557,7 +651,7 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                         return None
             
             # Create tasks for fetching medication details
-            detail_tasks = [limited_fetch_med_details(med) for med in results]
+            detail_tasks = [limited_fetch_med_details(med) for med in relevant_results]
             detail_results = await asyncio.gather(*detail_tasks)
             
             # Filter out None results
@@ -583,7 +677,103 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
             
             return full_context
         
-        return "No se encontraron resultados relevantes."
+        if is_prospecto:
+            return self._generate_not_found_message(active_principle, formulation_info["concentration"])
+        
+        return "No se encontraron medicamentos relevantes para esta consulta en la base de datos CIMA."
+
+    def _filter_relevant_results(self, results, search_term):
+        """Filter to keep only relevant results based on the search term"""
+        relevant_results = []
+        for med in results:
+            med_name = med.get('nombre', '').lower()
+            pactivos = med.get('pactivos', '').lower()
+            
+            # Only include if the search term appears in the name or active ingredients
+            if search_term in med_name or search_term in pactivos:
+                relevant_results.append(med)
+        
+        return relevant_results if relevant_results else results[:3]  # Return at least some results
+
+    def _is_relevant_medication(self, med, query, search_terms):
+        """Determine if a medication is actually relevant to the query"""
+        query_lower = query.lower()
+        med_name = med.get('nombre', '').lower()
+        pactivos = med.get('pactivos', '').lower()
+        
+        # Blacklist certain terms that often appear as default/first results
+        blacklist = ["abacavir", "vitamina", "abacavir/lamivudina", "acenocumarol"]
+        
+        # Check if this is a blacklisted medication with no explicit match
+        for term in blacklist:
+            if term in med_name.lower() or term in pactivos.lower():
+                # Check if any search term explicitly matches this medication
+                if not any(term.lower() in med_name.lower() or term.lower() in pactivos.lower() for term in search_terms):
+                    return False
+        
+        # Check if any search term appears in the medication name or active ingredients
+        for term in search_terms:
+            term_lower = term.lower()
+            if term_lower in med_name or term_lower in pactivos:
+                return True
+                
+        # Check if any common medication term appears in both query and medication
+        common_meds = self._get_common_medications()
+        for med_term in common_meds:
+            if med_term in query_lower and (med_term in med_name or med_term in pactivos):
+                return True
+                
+        # For cases where no explicit match, check if there's some partial overlap
+        med_words = set(med_name.split() + pactivos.split())
+        query_words = set(query_lower.split())
+        common_words = med_words.intersection(query_words)
+        if len(common_words) > 0 and not all(word in ["de", "la", "el", "los", "las", "para", "con", "sin"] for word in common_words):
+            return True
+            
+        return False
+
+    def _generate_not_found_message(self, active_principle, concentration):
+        """Generate a helpful message when no results are found for a prospecto request"""
+        message = f"No se encontró información específica sobre "
+        
+        if active_principle and active_principle != "":
+            message += f"{active_principle}"
+            if concentration:
+                message += f" {concentration}"
+            message += " "
+        
+        message += "en la base de datos CIMA. "
+        
+        message += """
+Es posible que este medicamento no esté registrado en la AEMPS, que se comercialice bajo otro nombre, o que sea un complemento alimenticio/producto sanitario en lugar de un medicamento.
+
+Para obtener información precisa:
+1. Verifique la ortografía del nombre del medicamento
+2. Intente buscar por el nombre del principio activo
+3. Consulte el prospecto físico del medicamento
+4. Consulte con su farmacéutico o médico
+
+Si necesita un prospecto general para este principio activo, indique el nombre comercial específico o el laboratorio fabricante para obtener resultados más precisos.
+"""
+        return message
+
+    def _get_common_medications(self):
+        """Return a list of common medications in Spanish for better matching"""
+        return [
+            "melatonina", "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", 
+            "simvastatina", "enalapril", "metformina", "lorazepam", "diazepam", 
+            "fluoxetina", "atorvastatina", "tramadol", "naproxeno", "metamizol", 
+            "aspirina", "ácido acetilsalicílico", "acetilsalicilico", "salbutamol", 
+            "fluticasona", "amlodipino", "valsartan", "losartan", "dexametasona", 
+            "betametasona", "fentanilo", "morfina", "alendronato", "quetiapina", 
+            "risperidona", "levotiroxina", "ranitidina", "cetirizina", "ebastina",
+            "ambroxol", "ciprofloxacino", "levofloxacino", "azitromicina",
+            "amlodipino", "hidroclorotiazida", "venlafaxina", "sertralina",
+            "escitalopram", "pantoprazol", "lansoprazol", "furosemida",
+            "alprazolam", "metoclopramida", "hidrocortisona", "aciclovir",
+            "valaciclovir", "claritromicina", "ciclobenzaprina", "prednisona",
+            "prednisolona", "budesonida", "montelukast", "formoterol"
+        ]
 
     def _extract_search_terms(self, query: str) -> List[str]:
         """Extract potential search terms from the query"""
@@ -616,6 +806,12 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                 bigram = f"{words[i]} {words[i+1]}"
                 if bigram not in potential_terms:
                     potential_terms.append(bigram)
+        
+        # Check for common medications in the query
+        common_meds = self._get_common_medications()
+        for med in common_meds:
+            if med in query.lower() and med not in [term.lower() for term in potential_terms]:
+                potential_terms.append(med)
         
         # Eliminate duplicates
         return list(set(potential_terms))
@@ -655,6 +851,8 @@ CONSULTA ORIGINAL:
 {query}
 
 Genera una respuesta completa y exhaustiva utilizando toda la información disponible en el contexto. Cita las fuentes CIMA usando el formato [Ref X: Nombre del medicamento (Nº Registro)].
+
+Si no hay información específica sobre el medicamento solicitado en el contexto CIMA, explica claramente que no se encuentra disponible en la base de datos y proporciona recomendaciones generales basadas en conocimientos farmacéuticos.
 """
 
         prompt_tokens = self.num_tokens(prompt)
@@ -756,6 +954,8 @@ Nunca inventes información que no aparezca en el contexto CIMA. Si no tienes su
 Intenta explicar la información técnica en términos comprensibles sin perder precisión científica. Cuando sea necesario, define términos médicos o farmacéuticos complejos.
 
 Recuerda que tus respuestas pueden tener impacto en decisiones de salud, así que mantén el rigor científico y la precisión en todo momento.
+
+Si el medicamento solicitado no se encuentra en la base de datos CIMA, explica esto claramente y proporciona información general sobre el tipo de medicamento cuando sea posible, indicando claramente que esta información no proviene de CIMA.
 """
 
     prospecto_prompt = """Experto en redacción de prospectos de medicamentos según normativa AEMPS.
@@ -804,6 +1004,8 @@ Cuando se solicite redactar un prospecto completo, deberás generar un documento
 Utiliza un lenguaje claro, comprensible para el paciente medio sin conocimientos médicos. Estructura el texto con encabezados numerados. Evita terminología técnica innecesaria pero mantén la precisión científica.
 
 Basa toda la información en los datos proporcionados en el contexto CIMA, citando apropiadamente las fuentes con el formato [Ref: Nombre del medicamento (Nº Registro)].
+
+Si no hay información disponible en CIMA sobre el medicamento solicitado, explica claramente que no se encuentra en la base de datos y proporciona información general sobre el principio activo cuando sea posible, indicando claramente que esta información no proviene de CIMA y que debe ser verificada por un profesional sanitario.
 """
 
     async def get_session(self):
@@ -847,6 +1049,10 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         # Track already processed medications to avoid duplicates
         processed_nregistros = set()
         all_med_info = []
+
+        # Get common medication names for better matching
+        common_medications = self._get_common_medications()
+        requested_med = query_info["active_ingredient"]
         
         # 1. Try direct searches using the active ingredient and section-specific searches
         if query_info["active_ingredient"]:
@@ -857,6 +1063,13 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                     query_info["active_ingredient"], 
                     query_info["section_number"]
                 )
+                
+                # Verify relevance of the results
+                search_results = [med for med in search_results if self._is_relevant_medication(
+                    med, 
+                    query, 
+                    [query_info["active_ingredient"]] + query_info["search_terms"]
+                )]
                 
                 # Process the results
                 for med in search_results:
@@ -873,7 +1086,16 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
             
             # Standard search by active ingredient
             if len(all_med_info) < 2:
+                # First try with the most specific search
                 meds = await self._search_medications(session, {"principiosActivos": query_info["active_ingredient"]})
+                
+                # Filter out irrelevant results
+                meds = [med for med in meds if self._is_relevant_medication(
+                    med, 
+                    query, 
+                    [query_info["active_ingredient"]] + query_info["search_terms"]
+                )]
+                
                 for med in meds[:3]:  # Limit to 3 results
                     if med.get("nregistro") not in processed_nregistros:
                         processed_nregistros.add(med.get("nregistro"))
@@ -889,30 +1111,11 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         # 2. If we still don't have enough results, try with the general search terms
         if len(all_med_info) < 2:
             for term in query_info["search_terms"][:3]:  # Limit to first 3 terms
-                term_meds = await self._search_medications(session, {"nombre": term})
-                for med in term_meds[:2]:  # Limit to 2 results per term
-                    if med.get("nregistro") not in processed_nregistros:
-                        processed_nregistros.add(med.get("nregistro"))
-                        med_info = await self._get_complete_medication_details(
-                            session, 
-                            med, 
-                            fetch_prospecto=query_info["is_prospecto"],
-                            focus_section=query_info["section_number"]
-                        )
-                        if med_info:
-                            all_med_info.append(med_info)
-                            
-                # Break if we have enough results
-                if len(all_med_info) >= 2:
-                    break
-        
-        # 3. If we still don't have results, try a broader search
-        if len(all_med_info) == 0:
-            general_terms = [term for term in query_info["search_terms"] if term != query_info["active_ingredient"]]
-            if general_terms:
-                for term in general_terms[:2]:
-                    broad_meds = await self._search_medications(session, {})  # Empty search to get popular medications
-                    for med in broad_meds[:3]:
+                if term.lower() in common_medications:  # Only search for terms that might be medications
+                    term_meds = await self._search_medications(session, {"nombre": term})
+                    term_meds = [med for med in term_meds if self._is_relevant_medication(med, query, [term] + query_info["search_terms"])]
+                    
+                    for med in term_meds[:2]:  # Limit to 2 results per term
                         if med.get("nregistro") not in processed_nregistros:
                             processed_nregistros.add(med.get("nregistro"))
                             med_info = await self._get_complete_medication_details(
@@ -923,6 +1126,34 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                             )
                             if med_info:
                                 all_med_info.append(med_info)
+                                
+                # Break if we have enough results
+                if len(all_med_info) >= 2:
+                    break
+        
+        # 3. If we still don't have results and have a specific medication, provide a not found message
+        if len(all_med_info) == 0 and requested_med:
+            not_found_message = self._generate_not_found_message(
+                requested_med, 
+                query_info["is_prospecto"], 
+                query_info["concentration"]
+            )
+            
+            # Store in cache
+            self.reference_cache[cache_key] = not_found_message
+            return not_found_message
+        
+        # 4. If we still don't have results, provide generic information
+        if len(all_med_info) == 0:
+            generic_message = (
+                "No se encontraron medicamentos relevantes para esta consulta en la base de datos CIMA. "
+                "Para obtener información específica, intente incluir el nombre exacto del medicamento o el principio activo "
+                "en su consulta. También puede especificar la concentración o la forma farmacéutica para mejorar los resultados."
+            )
+            
+            # Store in cache
+            self.reference_cache[cache_key] = generic_message
+            return generic_message
         
         # Combine all results and check token count
         combined_results = "\n\n".join(all_med_info)
@@ -937,21 +1168,75 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                 smaller_context = all_med_info[0]
             combined_results = smaller_context
         
-        # If we got no results, provide a helpful message
-        if not all_med_info:
-            combined_results = "No se encontraron resultados específicos para esta consulta en la base de datos CIMA. " + \
-                              "Por favor, intente con nombres de medicamentos más específicos o reformule su consulta."
-        
         # Store in cache
         self.reference_cache[cache_key] = combined_results
         return combined_results
+
+    def _generate_not_found_message(self, medication_name, is_prospecto=False, concentration=None):
+        """Generate a helpful message when a specific medication is not found"""
+        concentration_str = f" {concentration}" if concentration else ""
+        
+        if is_prospecto:
+            return f"""
+# Información sobre "{medication_name}{concentration_str}"
+
+Lo sentimos, no se encontró información sobre "{medication_name}{concentration_str}" en la base de datos CIMA de la AEMPS.
+
+## Posibles razones:
+1. Este producto podría ser un complemento alimenticio o producto sanitario, no un medicamento registrado
+2. Podría estar registrado con otro nombre comercial
+3. Podría no estar comercializado en España
+4. Podría haber un error en el nombre o en la concentración
+
+## Recomendaciones:
+- Verifique la ortografía exacta del medicamento
+- Intente buscar por el principio activo en lugar del nombre comercial
+- Consulte con su farmacéutico para obtener información específica
+- Verifique si se trata de un complemento alimenticio (no registrado en CIMA)
+
+Para obtener un prospecto válido, necesitamos el nombre exacto de un medicamento registrado en la AEMPS.
+"""
+        else:
+            return f"""
+No se encontró información sobre "{medication_name}{concentration_str}" en la base de datos CIMA de la AEMPS.
+
+Posibles razones por las que no aparece este medicamento:
+1. Podría ser un complemento alimenticio o producto sanitario (no registrado como medicamento)
+2. Podría estar registrado con otro nombre comercial
+3. Podría no estar comercializado en España
+4. Podría haber un error en el nombre o en la concentración
+
+Para obtener información específica, intente:
+- Verificar la ortografía exacta del medicamento
+- Buscar por el principio activo en lugar del nombre comercial
+- Consultar con su farmacéutico
+- Especificar el laboratorio fabricante
+"""
+
+    def _get_common_medications(self):
+        """Return a list of common medications in Spanish for better matching"""
+        return [
+            "melatonina", "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", 
+            "simvastatina", "enalapril", "metformina", "lorazepam", "diazepam", 
+            "fluoxetina", "atorvastatina", "tramadol", "naproxeno", "metamizol", 
+            "aspirina", "ácido acetilsalicílico", "acetilsalicilico", "salbutamol", 
+            "fluticasona", "amlodipino", "valsartan", "losartan", "dexametasona", 
+            "betametasona", "fentanilo", "morfina", "alendronato", "quetiapina", 
+            "risperidona", "levotiroxina", "ranitidina", "cetirizina", "ebastina",
+            "ambroxol", "ciprofloxacino", "levofloxacino", "azitromicina",
+            "amlodipino", "hidroclorotiazida", "venlafaxina", "sertralina",
+            "escitalopram", "pantoprazol", "lansoprazol", "furosemida",
+            "alprazolam", "metoclopramida", "hidrocortisona", "aciclovir",
+            "valaciclovir", "claritromicina", "ciclobenzaprina", "prednisona",
+            "prednisolona", "budesonida", "montelukast", "formoterol"
+        ]
 
     def _analyze_query(self, query: str) -> Dict[str, Any]:
         """
         Enhanced query analysis to extract key information
         """
         query_lower = query.lower()
-        is_prospecto = bool(re.search(r'(?:prospecto|reda[ckt]|crear?|generar?)\s+(?:un|el|de)', query_lower))
+        is_prospecto = bool(re.search(r'(?:prospecto|reda[ckt]|crear?|generar?|realizar?)\s+(?:un|el|de|sobre)', query_lower))
         
         # Define patterns for important pharmaceutical terms
         section_patterns = {
@@ -973,18 +1258,13 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                 section_number = section
                 break
                 
-        # Extract active ingredient
-        # Common Spanish medications (add more as needed)
-        common_medications = [
-            "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina", 
-            "enalapril", "metformina", "lorazepam", "diazepam", "fluoxetina", 
-            "atorvastatina", "tramadol", "naproxeno", "metamizol", "azitromicina",
-            "aspirina", "acido acetilsalicilico", "salbutamol", "fluticasona", 
-            "amlodipino", "valsartan", "losartan", "dexametasona", "betametasona",
-            "fentanilo", "morfina", "alendronato", "quetiapina", "risperidona",
-            "levotiroxina", "ranitidina", "levofloxacino", "ciprofloxacino",
-            "ondansetron", "prednisona", "hidrocortisona", "clonazepam"
-        ]
+        # Extract active ingredient from common medications
+        common_medications = self._get_common_medications()
+        
+        # Look for concentration patterns
+        concentration_pattern = r'(\d+(?:[,.]\d+)?)\s*(%|mg|g|ml|mcg|UI|unidades)'
+        concentration_match = re.search(concentration_pattern, query)
+        concentration = concentration_match.group(0) if concentration_match else None
         
         # Try to find a medication name in the query
         active_ingredient = None
@@ -998,14 +1278,20 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         
         # If active ingredient wasn't found through common medications, try to extract it from search terms
         if not active_ingredient and search_terms:
-            # Use the first search term as a potential medication name
-            active_ingredient = search_terms[0]
+            # Check if any search term is a known medication
+            med_terms = [term for term in search_terms if term.lower() in common_medications]
+            if med_terms:
+                active_ingredient = med_terms[0]
+            else:
+                # Use the first search term as a potential medication name
+                active_ingredient = search_terms[0]
         
         return {
             "active_ingredient": active_ingredient,
             "section_number": section_number,
             "is_prospecto": is_prospecto,
-            "search_terms": search_terms
+            "search_terms": search_terms,
+            "concentration": concentration
         }
 
     async def _search_in_specific_section(self, session, term, section):
@@ -1109,15 +1395,39 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         search_url = f"{self.base_url}/medicamentos"
         all_results = []
         
+        # Define blacklisted medications that often appear as first results
+        blacklist = ["abacavir", "lamivudina", "abacavir/lamivudina", "acenocumarol"]
+        
+        # Function to filter out blacklisted medications when not explicitly requested
+        def filter_blacklisted(results, search_term=None):
+            if not search_term:
+                return [med for med in results if not any(
+                    black in med.get('nombre', '').lower() or black in med.get('pactivos', '').lower() 
+                    for black in blacklist)]
+            else:
+                # Don't filter if the search term matches a blacklisted item
+                search_term = search_term.lower()
+                if any(black in search_term for black in blacklist):
+                    return results
+                # Otherwise, filter out blacklisted items
+                return [med for med in results if not any(
+                    black in med.get('nombre', '').lower() or black in med.get('pactivos', '').lower() 
+                    for black in blacklist)]
+        
         # Execute the primary search
+        search_term = params.get("principiosActivos", params.get("nombre", ""))
         try:
             async with session.get(search_url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
                     if isinstance(data, dict) and "resultados" in data:
                         results = data.get("resultados", [])
-                        logger.info(f"Search with params {params} returned {len(results)} results")
-                        all_results.extend(results)
+                        
+                        # Apply blacklist filtering
+                        filtered_results = filter_blacklisted(results, search_term)
+                        
+                        logger.info(f"Search with params {params} returned {len(results)} results, {len(filtered_results)} after filtering")
+                        all_results.extend(filtered_results)
         except Exception as e:
             logger.error(f"Error in medication search with params {params}: {str(e)}")
         
@@ -1130,8 +1440,10 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                         data = await response.json()
                         if isinstance(data, dict) and "resultados" in data:
                             results = data.get("resultados", [])
-                            logger.info(f"Partial search with term {partial_query} returned {len(results)} results")
-                            all_results.extend(results)
+                            # Apply blacklist filtering
+                            filtered_results = filter_blacklisted(results, partial_query)
+                            logger.info(f"Partial search with term {partial_query} returned {len(results)} results, {len(filtered_results)} after filtering")
+                            all_results.extend(filtered_results)
             except Exception as e:
                 logger.error(f"Error in partial match search: {str(e)}")
         
@@ -1146,8 +1458,10 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                             data = await response.json()
                             if isinstance(data, dict) and "resultados" in data:
                                 results = data.get("resultados", [])
-                                logger.info(f"Fallback search with practiv1={first_word} returned {len(results)} results")
-                                all_results.extend(results)
+                                # Apply blacklist filtering
+                                filtered_results = filter_blacklisted(results, first_word)
+                                logger.info(f"Fallback search with practiv1={first_word} returned {len(results)} results, {len(filtered_results)} after filtering")
+                                all_results.extend(filtered_results)
             except Exception as e:
                 logger.error(f"Error in fallback principle active search: {str(e)}")
         
@@ -1163,6 +1477,44 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
                     unique_results.append(med)
                     
         return unique_results
+
+    def _is_relevant_medication(self, med, query, search_terms):
+        """Determine if a medication is actually relevant to the query"""
+        query_lower = query.lower()
+        med_name = med.get('nombre', '').lower()
+        pactivos = med.get('pactivos', '').lower()
+        
+        # Blacklist certain terms that often appear as default/first results
+        blacklist = ["abacavir", "lamivudina", "abacavir/lamivudina", "acenocumarol"]
+        
+        # Check if this is a blacklisted medication with no explicit match
+        for term in blacklist:
+            if term in med_name.lower() or term in pactivos.lower():
+                # Check if any search term explicitly matches this medication
+                if not any(term.lower() in med_name.lower() or term.lower() in pactivos.lower() for term in search_terms):
+                    return False
+        
+        # Check if any search term appears in the medication name or active ingredients
+        for term in search_terms:
+            term_lower = term.lower()
+            if term_lower in med_name or term_lower in pactivos:
+                return True
+                
+        # Check if any common medication term appears in both query and medication
+        common_meds = self._get_common_medications()
+        for med_term in common_meds:
+            if med_term in query_lower and (med_term in med_name or med_term in pactivos):
+                return True
+                
+        # For cases where no explicit match, check if there's some partial overlap
+        # but we'll be stricter to avoid false positives
+        med_words = set(med_name.split() + pactivos.split())
+        query_words = set(query_lower.split())
+        common_words = med_words.intersection(query_words)
+        if len(common_words) > 1 and not all(word in ["de", "la", "el", "los", "las", "para", "con", "sin"] for word in common_words):
+            return True
+            
+        return False
 
     async def _get_complete_medication_details(self, session, med: Dict, fetch_prospecto: bool = False, focus_section: str = None) -> str:
         """
