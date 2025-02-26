@@ -7,5 +7,5 @@ nest-asyncio==1.5.8
 tiktoken==0.5.1
 pydantic==2.5.2
 langchain==0.0.339
-langchain-core==0.1.17
+langchain-core==0.1.25
 langgraph==0.0.26
