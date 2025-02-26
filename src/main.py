@@ -139,6 +139,7 @@ if 'agents' not in st.session_state:
     st.session_state.search_history = set()
     st.session_state.messages = []
     st.session_state.current_query = ""
+    st.session_state.use_langgraph = True  # Default to using the improved search
 
 # Title and description
 st.title("🧪 CIMA Assistant")
@@ -154,6 +155,31 @@ with st.sidebar:
     - Consultas sobre medicamentos
     - Referencias directas a fichas técnicas
     """)
+    
+    # Add LangGraph search toggle
+    st.header("Ajustes")
+    use_langgraph = st.toggle("Usar búsqueda avanzada (LangGraph)", value=st.session_state.use_langgraph)
+    
+    # Update session state and agents if toggle changed
+    if use_langgraph != st.session_state.use_langgraph:
+        st.session_state.use_langgraph = use_langgraph
+        # Update agent settings
+        if st.session_state.agents:
+            st.session_state.agents[0].use_langgraph = use_langgraph
+            st.session_state.agents[1].use_langgraph = use_langgraph
+        st.info(f"Modo de búsqueda: {'Avanzado (LangGraph)' if use_langgraph else 'Estándar'}")
+    
+    # Add toggle details explanation
+    with st.expander("¿Qué es la búsqueda avanzada?"):
+        st.markdown("""
+        La búsqueda avanzada utiliza un sistema basado en LangGraph que mejora significativamente los resultados, especialmente para:
+        
+        - Medicamentos específicos (como "MINOXIDIL BIORGA")
+        - Casos donde la búsqueda alfabética por defecto devuelve "abacavir" u otros resultados irrelevantes
+        - Principios activos con variantes de escritura o acentos
+        
+        Esta tecnología implementa un sistema de flujo de trabajo que prioriza la relevancia de los resultados mediante múltiples estrategias de búsqueda.
+        """)
     
     st.header("Historial de búsquedas")
     if st.session_state.search_history:
@@ -291,6 +317,11 @@ with tab1:
             if st.button(example):
                 st.session_state.current_query = example
                 st.rerun()
+        
+        # Add a special example for the abacavir problem
+        if st.button("MINOXIDIL BIORGA"):
+            st.session_state.current_query = "Encontrar información sobre MINOXIDIL BIORGA"
+            st.rerun()
     
     if st.button("Consultar Formulación", type="primary"):
         if not query_fm:
@@ -319,6 +350,9 @@ with tab1:
                     
                     status_text.text("Buscando información en CIMA...")
                     progress_bar.progress(25)
+                    
+                    # Set the agent's search mode based on current setting
+                    st.session_state.agents[0].use_langgraph = st.session_state.use_langgraph
                     
                     # Process response using our managed event loop
                     response = run_async(st.session_state.agents[0].answer_question(query_fm))
@@ -424,6 +458,9 @@ with tab2:
                     
                     status_text.text("Consultando CIMA...")
                     progress_bar.progress(30)
+                    
+                    # Set the agent's search mode based on current setting
+                    st.session_state.agents[1].use_langgraph = st.session_state.use_langgraph
                     
                     # Process response using our managed event loop
                     response = run_async(st.session_state.agents[1].chat(prompt))
