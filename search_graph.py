@@ -13,7 +13,7 @@ from typing import List, Dict, Any, Optional, Set, Tuple, Callable
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 import aiohttp
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from config import Config
 
