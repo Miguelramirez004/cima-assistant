@@ -5,3 +5,7 @@ python-dotenv==1.0.0
 httpx==0.24.1
 nest-asyncio==1.5.8
 tiktoken==0.5.1
+pydantic==2.5.2
+langchain==0.0.339
+langchain-core==0.1.17
+langgraph==0.0.26
