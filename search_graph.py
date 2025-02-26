@@ -26,11 +26,11 @@ MIN_RELEVANCE_THRESHOLD = 20
 # Maximum number of medications to return
 MAX_RESULTS = 5
 
-class QueryIntent(BaseModel):
-    """Information about what type of data the user is looking for."""
-    intent_type: str = "general"  # general, contraindications, dosage, side_effects, etc.
-    section_key: Optional[str] = None  # Corresponding section in CIMA API
-    description: str = "Información general"
+class InformationRequest(BaseModel):
+    """Represents a specific information request about a drug."""
+    type: str  # Type of information (e.g., "contraindications", "dosage", etc.)
+    keywords: List[str]  # Keywords that indicate this information type
+    found: bool = False  # Whether this type was found in the query
 
 class MedicationQuery(BaseModel):
     """Structured representation of a medication search query."""
@@ -42,7 +42,8 @@ class MedicationQuery(BaseModel):
     uppercase_names: List[str] = Field(default_factory=list)
     search_terms: List[str] = Field(default_factory=list)
     is_prospecto: bool = False
-    query_intent: QueryIntent = Field(default_factory=QueryIntent)
+    is_information_request: bool = False
+    information_request_type: Optional[str] = None
     
 class MedicationResult(BaseModel):
     """Structured representation of a medication search result."""
@@ -78,60 +79,47 @@ class MedicationSearchGraph:
         "alopurinol", "amitriptilina", "diclofenaco", "loratadina", "cetirizina",
         "vitamina d", "calcio", "hierro", "insulina", "metronidazol", "minoxidil"
     ])
+    # Information request types
+    information_requests: List[InformationRequest] = field(default_factory=lambda: [
+        InformationRequest(
+            type="contraindications",
+            keywords=["contraindicaciones", "contraindicación", "no tomar", "no usar", "no debe"]
+        ),
+        InformationRequest(
+            type="side_effects",
+            keywords=["efectos secundarios", "efectos adversos", "reacciones adversas", "adversos"]
+        ),
+        InformationRequest(
+            type="dosage",
+            keywords=["posología", "posologia", "dosis", "dosificación", "como tomar", "como usar"]
+        ),
+        InformationRequest(
+            type="interactions",
+            keywords=["interacciones", "interacción", "junto con", "combinado con", "mezclar con"]
+        ),
+        InformationRequest(
+            type="precautions",
+            keywords=["precauciones", "advertencias", "cuidados", "tenga cuidado", "atención"]
+        ),
+        InformationRequest(
+            type="indications",
+            keywords=["indicado para", "indicaciones", "uso", "para qué", "para que", "para qué sirve"]
+        ),
+        InformationRequest(
+            type="administration",
+            keywords=["administración", "administracion", "vía", "via", "modo de empleo", "como administrar"]
+        ),
+        InformationRequest(
+            type="composition",
+            keywords=["composición", "composicion", "ingredientes", "componentes", "excipientes"]
+        ),
+        InformationRequest(
+            type="conservation",
+            keywords=["conservación", "conservacion", "almacenamiento", "guardar", "caducidad"]
+        )
+    ])
     
-    intent_mapping: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        # Map common query terms to CIMA sections
-        "contraindicacion": {
-            "intent_type": "contraindications",
-            "section_key": "contraindicaciones",
-            "description": "Contraindicaciones",
-            "keywords": ["contraindicacion", "contraindicaciones", "no usar", "no debe"]
-        },
-        "posologia": {
-            "intent_type": "dosage",
-            "section_key": "posologia_procedimiento",
-            "description": "Posología y administración",
-            "keywords": ["posologia", "dosis", "administracion", "tomar", "como"]
-        },
-        "efecto_adverso": {
-            "intent_type": "side_effects",
-            "section_key": "efectos_adversos",
-            "description": "Efectos adversos",
-            "keywords": ["efecto adverso", "efectos adversos", "secundario", "reaccion"]
-        },
-        "interaccion": {
-            "intent_type": "interactions",
-            "section_key": "interacciones",
-            "description": "Interacciones con otros medicamentos",
-            "keywords": ["interaccion", "interacciones", "interactua"]
-        },
-        "indicacion": {
-            "intent_type": "indications",
-            "section_key": "indicaciones",
-            "description": "Indicaciones terapéuticas",
-            "keywords": ["indicacion", "indicaciones", "sirve para", "trata", "tratar"]
-        },
-        "composicion": {
-            "intent_type": "composition",
-            "section_key": "composicion",
-            "description": "Composición",
-            "keywords": ["composicion", "excipiente", "excipientes", "contiene"]
-        },
-        "advertencia": {
-            "intent_type": "warnings",
-            "section_key": "advertencias",
-            "description": "Advertencias y precauciones",
-            "keywords": ["advertencia", "advertencias", "precaucion", "precauciones"]
-        },
-        "embarazo": {
-            "intent_type": "pregnancy",
-            "section_key": "embarazo_lactancia",
-            "description": "Embarazo y lactancia",
-            "keywords": ["embarazo", "gestacion", "lactancia", "amamantar"]
-        }
-    })
-    
-    async def execute_search(self, query_text: str) -> Tuple[List[Dict[str, Any]], str, Optional[QueryIntent]]:
+    async def execute_search(self, query_text: str) -> Tuple[List[Dict[str, Any]], str]:
         """
         Execute a comprehensive search for medications based on the query.
         
@@ -139,7 +127,7 @@ class MedicationSearchGraph:
             query_text: The search query
             
         Returns:
-            Tuple[List[Dict], str, QueryIntent]: List of results, quality assessment, and query intent
+            Tuple[List[Dict], str]: List of results and quality assessment
         """
         session = None
         quality = "unknown"
@@ -166,19 +154,37 @@ class MedicationSearchGraph:
             
             # Analyze the query
             query_info = self._analyze_query(query_text)
+            logger.info(f"Query analysis: {query_info.active_principle}, Information request: {query_info.is_information_request}, Type: {query_info.information_request_type}")
             
             # Results storage
             all_results = []
             seen_nregistros = set()
             
+            # For information requests: prioritize exact matches on active principle
+            if query_info.is_information_request and query_info.active_principle:
+                logger.info(f"Processing information request about {query_info.active_principle}")
+                info_results = await self._search_by_active_principle(session, query_info, prioritize_exact_match=True)
+                
+                # Add results
+                all_results.extend(info_results)
+                seen_nregistros.update([r.nregistro for r in info_results])
+                
+                if info_results:
+                    quality = "high"
+            
             # 1. First try: search for uppercase medication names like "MINOXIDIL BIORGA"
-            if query_info.uppercase_names:
+            if query_info.uppercase_names and len(all_results) < MAX_RESULTS:
                 logger.info(f"Searching for uppercase name: {query_info.uppercase_names[0]}")
                 uppercase_results = await self._search_by_uppercase(session, query_info)
                 
+                # Add unique results
+                for result in uppercase_results:
+                    if result.nregistro not in seen_nregistros:
+                        all_results.append(result)
+                        seen_nregistros.add(result.nregistro)
+                
                 # If we find good uppercase matches, that's high quality
-                if uppercase_results:
-                    all_results.extend(uppercase_results)
+                if uppercase_results and quality == "unknown":
                     quality = "high"
             
             # 2. Second try: search by active principle if available
@@ -239,11 +245,11 @@ class MedicationSearchGraph:
             logger.info(f"Search completed: {len(filtered_results)} results with quality {quality}")
             
             # Convert to dictionaries for easier integration
-            return [result.dict() for result in filtered_results], quality, query_info.query_intent
+            return [result.dict() for result in filtered_results], quality
             
         except Exception as e:
             logger.error(f"Error executing search: {str(e)}")
-            return [], "error", None
+            return [], "error"
         finally:
             # Close session
             if session:
@@ -253,16 +259,32 @@ class MedicationSearchGraph:
                     logger.error(f"Error closing session: {str(e)}")
     
     def _analyze_query(self, query_text: str) -> MedicationQuery:
-        """Analyze the query to extract structured search parameters and intent."""
+        """Analyze the query to extract structured search parameters."""
         query_lower = query_text.lower()
+        
+        # Check if this is an information request
+        is_information_request = False
+        information_request_type = None
+        
+        # Check if the query matches any information request patterns
+        for info_req in self.information_requests:
+            for keyword in info_req.keywords:
+                if keyword in query_lower:
+                    is_information_request = True
+                    information_request_type = info_req.type
+                    break
+            if is_information_request:
+                break
         
         # Extract uppercase medication names
         uppercase_names = re.findall(r'\b[A-Z]{2,}\s+[A-Z]{2,}\b', query_text.upper())
         
-        # Extract active principle
+        # Extract active principle - this is critical for information requests
         active_principle = None
-        # Look for known active principles
-        for ap in self.active_principles:
+        
+        # First look for known active principles
+        principles_by_length = sorted(self.active_principles, key=len, reverse=True)
+        for ap in principles_by_length:
             if ap in query_lower:
                 active_principle = ap
                 break
@@ -282,8 +304,15 @@ class MedicationSearchGraph:
                 elif uppercase_names:
                     active_principle = uppercase_names[0].lower()
                 else:
-                    # Just take the longest word as a guess
-                    words = [w for w in query_lower.split() if len(w) > 4 and not any(x in w for x in ['como', 'para', 'sobre', 'cual', 'este', 'esta'])]
+                    # Just take the longest word as a guess - filter out information request words
+                    info_req_words = set()
+                    for info_req in self.information_requests:
+                        for keyword in info_req.keywords:
+                            info_req_words.update(keyword.split())
+                            
+                    words = [w for w in query_lower.split() if len(w) > 4 and 
+                            not any(x in w for x in ['como', 'para', 'sobre', 'cual', 'este', 'esta']) and
+                            w not in info_req_words]
                     if words:
                         active_principle = max(words, key=len)
         
@@ -317,9 +346,6 @@ class MedicationSearchGraph:
         prospecto_pattern = r'(?:redactar|generar|crear|elaborar|realizar?e?|escrib[ei]r|hac[ae]r|desarroll[ae]r|realiza(?:r|)|prepar(?:ar|a))\s+(?:un|el|uns?|una?)?\s+prospecto'
         is_prospecto = bool(re.search(prospecto_pattern, query_lower))
         
-        # Identify query intent (what information the user is looking for)
-        query_intent = self._determine_query_intent(query_lower)
-        
         # Create and return the query object
         return MedicationQuery(
             query_text=query_text,
@@ -330,33 +356,9 @@ class MedicationSearchGraph:
             uppercase_names=uppercase_names,
             search_terms=search_terms,
             is_prospecto=is_prospecto,
-            query_intent=query_intent
+            is_information_request=is_information_request,
+            information_request_type=information_request_type
         )
-    
-    def _determine_query_intent(self, query_text: str) -> QueryIntent:
-        """
-        Determine what type of information the user is looking for.
-        This is used to highlight the relevant sections in the response.
-        
-        Example: "contraindicaciones ibuprofeno" -> focus on contraindications section
-        """
-        query_lower = query_text.lower()
-        
-        # Default to general intent
-        intent = QueryIntent()
-        
-        # Check for specific intents based on keywords
-        for key, intent_data in self.intent_mapping.items():
-            # Check each keyword for this intent
-            for keyword in intent_data["keywords"]:
-                if keyword in query_lower:
-                    return QueryIntent(
-                        intent_type=intent_data["intent_type"],
-                        section_key=intent_data["section_key"],
-                        description=intent_data["description"]
-                    )
-        
-        return intent
     
     async def _search_by_uppercase(self, session: aiohttp.ClientSession, query: MedicationQuery) -> List[MedicationResult]:
         """Search for exact matches with uppercase medication names."""
@@ -390,7 +392,7 @@ class MedicationSearchGraph:
             logger.error(f"Error in uppercase search: {str(e)}")
             return []
     
-    async def _search_by_active_principle(self, session: aiohttp.ClientSession, query: MedicationQuery) -> List[MedicationResult]:
+    async def _search_by_active_principle(self, session: aiohttp.ClientSession, query: MedicationQuery, prioritize_exact_match: bool = False) -> List[MedicationResult]:
         """Search by active principle, which is highly relevant for medication searches."""
         if not query.active_principle:
             return []
@@ -430,8 +432,14 @@ class MedicationSearchGraph:
                                             result, 
                                             active_principle=active_principle, 
                                             concentration=query.concentration,
-                                            formulation_type=query.formulation_type
+                                            formulation_type=query.formulation_type,
+                                            information_request=query.is_information_request
                                         )
+                                        
+                                        # For information requests, increase the relevance of exact matches
+                                        if prioritize_exact_match and query.is_information_request:
+                                            if result.pactivos and active_principle.lower() in result.pactivos.lower():
+                                                result.relevance_score += 50
                                         
                                         # Only add if it's above threshold
                                         if result.relevance_score >= MIN_RELEVANCE_THRESHOLD:
@@ -457,8 +465,14 @@ class MedicationSearchGraph:
                                             result, 
                                             active_principle=active_principle, 
                                             concentration=query.concentration,
-                                            formulation_type=query.formulation_type
+                                            formulation_type=query.formulation_type,
+                                            information_request=query.is_information_request
                                         )
+                                        
+                                        # For information requests, increase the relevance of exact matches
+                                        if prioritize_exact_match and query.is_information_request:
+                                            if result.pactivos and active_principle.lower() in result.pactivos.lower():
+                                                result.relevance_score += 50
                                         
                                         if result.relevance_score >= MIN_RELEVANCE_THRESHOLD:
                                             results.append(result)
@@ -480,7 +494,10 @@ class MedicationSearchGraph:
             results = []
             seen_nregistros = set()
             
-            async with session.get(search_url, params={"nombre": query.query_text}) as response:
+            # For information requests, just search by active principle if available
+            search_term = query.active_principle if query.is_information_request and query.active_principle else query.query_text
+            
+            async with session.get(search_url, params={"nombre": search_term}) as response:
                 if response.status == 200:
                     try:
                         data = await response.json()
@@ -492,7 +509,8 @@ class MedicationSearchGraph:
                                         result, 
                                         active_principle=query.active_principle, 
                                         concentration=query.concentration,
-                                        formulation_type=query.formulation_type
+                                        formulation_type=query.formulation_type,
+                                        information_request=query.is_information_request
                                     )
                                     
                                     if result.relevance_score >= MIN_RELEVANCE_THRESHOLD:
@@ -521,8 +539,16 @@ class MedicationSearchGraph:
             results = []
             seen_nregistros = set()
             
+            # For information requests, prioritize the active principle terms
+            search_terms = [term for term in query.search_terms 
+                          if query.active_principle and query.active_principle in term] if query.is_information_request else query.search_terms
+            
+            # If no active principle terms found, use the regular search terms
+            if not search_terms:
+                search_terms = query.search_terms
+            
             # Only use the most promising search terms
-            for term in query.search_terms[:3]:
+            for term in search_terms[:3]:
                 if len(results) >= MAX_RESULTS:
                     break
                     
@@ -546,7 +572,8 @@ class MedicationSearchGraph:
                                             active_principle=query.active_principle, 
                                             concentration=query.concentration,
                                             query_terms=query.search_terms,
-                                            formulation_type=query.formulation_type
+                                            formulation_type=query.formulation_type,
+                                            information_request=query.is_information_request
                                         )
                                         
                                         # Higher threshold for term searches to avoid irrelevant results
@@ -568,7 +595,8 @@ class MedicationSearchGraph:
                             active_principle: Optional[str] = None,
                             concentration: Optional[str] = None,
                             query_terms: Optional[List[str]] = None,
-                            formulation_type: Optional[str] = None) -> int:
+                            formulation_type: Optional[str] = None,
+                            information_request: bool = False) -> int:
         """
         Calculate a relevance score for a medication result.
         
@@ -587,19 +615,26 @@ class MedicationSearchGraph:
         # Check active principle match
         if active_principle and med.pactivos:
             pactivos_lower = med.pactivos.lower()
+            # For information requests, exact active principle match is critical
             if active_principle.lower() in pactivos_lower:
                 # Full match in active principles
                 score += 100
+                # Extra boost for information requests
+                if information_request:
+                    score += 50
             elif active_principle.lower() in med_name_lower:
                 # Active principle appears in name
                 score += 50
+                # Information requests still get a boost but smaller
+                if information_request:
+                    score += 25
         
-        # Check for concentration match
-        if concentration and concentration in med_name_lower:
+        # Check for concentration match - less important for information requests
+        if concentration and concentration in med_name_lower and not information_request:
             score += 30
         
-        # Check formulation type match
-        if formulation_type and formulation_type in med_name_lower:
+        # Check formulation type match - less important for information requests
+        if formulation_type and formulation_type in med_name_lower and not information_request:
             score += 20
         
         # Check for query terms in name
@@ -638,6 +673,12 @@ class MedicationSearchGraph:
         common_words = {"sobre", "para", "como", "este", "esta", "estos", "estas", "cual", "cuales", 
                        "con", "por", "los", "las", "del", "que", "realizar", "redactar", 
                        "crear", "generar", "prospecto", "formular", "elaborar", "realiza", "prepara"}
+        
+        # Add information request keywords to common words to filter them out
+        for info_req in self.information_requests:
+            for keyword in info_req.keywords:
+                for word in keyword.split():
+                    common_words.add(word)
         
         words = query.split()
         for word in words:
