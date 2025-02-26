@@ -1,6 +1,4 @@
-"""
-Custom OpenAI client creation with robust connection handling and error resilience
-"""
+"""Custom OpenAI client creation with robust connection handling and error resilience"""
 from openai import AsyncOpenAI, OpenAI
 import httpx
 import backoff

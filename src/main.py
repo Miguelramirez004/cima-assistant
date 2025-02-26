@@ -171,6 +171,84 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
+    # Add diagnostic button
+    if st.button("Diagnóstico CIMA", key="diagnostico"):
+        st.info("Ejecutando diagnóstico de conexión con CIMA...")
+        
+        progress = st.progress(0)
+        status = st.empty()
+        
+        # Prueba 1: Conexión básica a CIMA
+        status.text("Probando conexión básica a CIMA...")
+        
+        try:
+            import requests
+            response = requests.get("https://cima.aemps.es/cima/rest/medicamentos")
+            if response.status_code == 200:
+                st.success(f"✅ Conexión básica a CIMA exitosa (Status: {response.status_code})")
+            else:
+                st.error(f"❌ Error en conexión básica a CIMA (Status: {response.status_code})")
+            progress.progress(25)
+        except Exception as e:
+            st.error(f"❌ Error en conexión básica: {str(e)}")
+        
+        # Prueba 2: Acceso a medicamento específico
+        status.text("Probando acceso a medicamento específico...")
+        
+        try:
+            # Usar MINOXIDIL BIORGA como prueba
+            nregistro = "78929" # MINOXIDIL BIORGA
+            response = requests.get(f"https://cima.aemps.es/cima/rest/medicamento?nregistro={nregistro}")
+            if response.status_code == 200:
+                data = response.json()
+                st.success(f"✅ Acceso a medicamento exitoso: {data.get('nombre', 'Sin nombre')}")
+            else:
+                st.error(f"❌ Error en acceso a medicamento (Status: {response.status_code})")
+            progress.progress(50)
+        except Exception as e:
+            st.error(f"❌ Error en acceso a medicamento: {str(e)}")
+        
+        # Prueba 3: Acceso a ficha técnica
+        status.text("Probando acceso a ficha técnica...")
+        
+        try:
+            response = requests.get(f"https://cima.aemps.es/cima/rest/docSegmentado/contenido/1?nregistro={nregistro}")
+            if response.status_code == 200:
+                st.success(f"✅ Acceso a ficha técnica exitoso via API")
+            else:
+                st.error(f"❌ Error en acceso a ficha técnica via API (Status: {response.status_code})")
+            
+            # Probar acceso directo HTML
+            response = requests.get(f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html")
+            if response.status_code == 200:
+                st.success(f"✅ Acceso a ficha técnica HTML exitoso (longitud: {len(response.text)})")
+            else:
+                st.error(f"❌ Error en acceso a ficha técnica HTML (Status: {response.status_code})")
+            progress.progress(75)
+        except Exception as e:
+            st.error(f"❌ Error en acceso a ficha técnica: {str(e)}")
+        
+        # Prueba 4: Impresión de respuesta completa para diagnóstico
+        status.text("Obteniendo detalles completos...")
+        
+        try:
+            url = f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html"
+            response = requests.get(url)
+            
+            if response.status_code == 200:
+                content = response.text
+                with st.expander("Ver primeros 1000 caracteres de la respuesta"):
+                    st.code(content[:1000])
+                st.success(f"✅ Contenido obtenido correctamente (longitud: {len(content)})")
+            else:
+                st.error(f"❌ Error obteniendo contenido HTML (Status: {response.status_code})")
+            progress.progress(100)
+        except Exception as e:
+            st.error(f"❌ Error obteniendo contenido: {str(e)}")
+        
+        status.empty()
+        st.info("Diagnóstico completo")
+
 # Main tabs
 tab1, tab2, tab3 = st.tabs(["Formulación Magistral", "Consultas CIMA", "Historial"])
 
@@ -213,6 +291,11 @@ with tab1:
         if not query_fm:
             st.warning("Por favor ingrese una consulta")
         else:
+            # Check if query contains uppercase medication name like MINOXIDIL BIORGA
+            uppercase_names = re.findall(r'\b[A-Z]{2,}\s+[A-Z]{2,}\b', query_fm.upper())
+            if uppercase_names:
+                st.info(f"⚠️ Se ha detectado un nombre específico de medicamento: {uppercase_names[0]}. Se realizará una búsqueda directa.")
+            
             # Update current query
             st.session_state.current_query = query_fm
             
@@ -232,7 +315,7 @@ with tab1:
                     status_text.text("Buscando información en CIMA...")
                     progress_bar.progress(25)
                     
-                    # Get response using our managed event loop
+                    # Process response using our managed event loop
                     response = run_async(st.session_state.agents[0].answer_question(query_fm))
                     
                     # Update progress
@@ -316,6 +399,12 @@ with tab2:
             st.markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
 
+        # Check if prompt contains uppercase medication name like MINOXIDIL BIORGA
+        uppercase_names = re.findall(r'\b[A-Z]{2,}\s+[A-Z]{2,}\b', prompt.upper())
+        if uppercase_names:
+            info_msg = st.empty()
+            info_msg.info(f"⚠️ Se ha detectado un nombre específico de medicamento: {uppercase_names[0]}. Se realizará una búsqueda directa.")
+
         # Process and display assistant response
         with st.chat_message("assistant"):
             # Progress indicators
@@ -342,6 +431,8 @@ with tab2:
                     progress_bar.progress(100)
                     status_text.empty()
                     progress_placeholder.empty()
+                    if uppercase_names:
+                        info_msg.empty()  # Remove info message if present
                     
                     # Show response
                     st.markdown(response["answer"])
