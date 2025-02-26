@@ -167,7 +167,12 @@ with st.sidebar:
         st.session_state.search_history = set()
         st.session_state.formulation_history = []
         if st.session_state.agents and st.session_state.agents[1]:
-            st.session_state.agents[1].clear_history()
+            # Add a clear_history method if it doesn't exist
+            if hasattr(st.session_state.agents[1], 'clear_history'):
+                st.session_state.agents[1].clear_history()
+            else:
+                # If no clear_history method, clear conversation_history directly
+                st.session_state.agents[1].conversation_history = []
         st.session_state.messages = []
         st.rerun()
 
@@ -440,17 +445,26 @@ with tab2:
                     # Show sources in expander
                     with st.expander("Ver fuentes"):
                         st.markdown(response["context"])
+                        
+                    # Add to session state (MOVED INSIDE TRY BLOCK)
+                    st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
+                    
                 except Exception as e:
                     st.markdown(f"Error: {str(e)}")
                     logger.error(f"Error in chat response: {str(e)}")
-                    
-        # Add to session state
-        st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
+                    # Add error message to session state so conversation continues
+                    error_message = f"Lo siento, ha ocurrido un error al procesar su consulta: {str(e)}"
+                    st.session_state.messages.append({"role": "assistant", "content": error_message})
     
     # Button for new conversation
     if st.button("Nueva conversación", key="new_chat"):
         st.session_state.messages = []
-        st.session_state.agents[1].clear_history()
+        # Make sure clear_history exists before calling it
+        if hasattr(st.session_state.agents[1], 'clear_history'):
+            st.session_state.agents[1].clear_history()
+        else:
+            # If no clear_history method, clear conversation_history directly
+            st.session_state.agents[1].conversation_history = []
         st.rerun()
 
 with tab3:
