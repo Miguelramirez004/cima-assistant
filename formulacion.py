@@ -169,18 +169,28 @@ Utiliza un lenguaje preciso pero accesible, recordando que la persona que consul
         self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
         # Active principle database - Spanish
         self.active_principles = [
-            "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina", 
-            "enalapril", "metformina", "lorazepam", "diazepam", "fluoxetina", 
-            "atorvastatina", "tramadol", "naproxeno", "metamizol", "azitromicina",
-            "aspirina", "acido acetilsalicilico", "salbutamol", "fluticasona", 
-            "amlodipino", "valsartan", "losartan", "dexametasona", "betametasona",
-            "fentanilo", "morfina", "alendronato", "quetiapina", "risperidona",
-            "levotiroxina", "ranitidina", "levofloxacino", "ciprofloxacino",
-            "ondansetron", "prednisona", "hidrocortisona", "clonazepam",
-            "melatonina", "warfarina", "acenocumarol", "alprazolam", "atenolol",
-            "alopurinol", "amitriptilina", "diclofenaco", "loratadina", "cetirizina",
-            "vitamina d", "calcio", "hierro", "insulina", "metronidazol",
-            "minoxidil"
+           "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina",
+"enalapril", "metformina", "lorazepam", "diazepam", "fluoxetina",
+"atorvastatina", "tramadol", "naproxeno", "metamizol", "azitromicina",
+"aspirina", "acido acetilsalicilico", "salbutamol", "fluticasona",
+"amlodipino", "valsartan", "losartan", "dexametasona", "betametasona",
+"fentanilo", "morfina", "alendronato", "quetiapina", "risperidona",
+"levotiroxina", "ranitidina", "levofloxacino", "ciprofloxacino",
+"ondansetron", "prednisona", "hidrocortisona", "clonazepam",
+"melatonina", "warfarina", "acenocumarol", "alprazolam", "atenolol",
+"alopurinol", "amitriptilina", "diclofenaco", "loratadina", "cetirizina",
+"vitamina d", "calcio", "hierro", "insulina", "metronidazol",
+"minoxidil", "nolotil", "escitalopram", "bromazepam", "pantoprazol",
+"citalopram", "esomeprazol", "sertralina", "bisoprolol", "olmesartan",
+"rosuvastatina", "duloxetina", "clopidogrel", "furosemida", "ramipril",
+"paroxetina", "micofenolato", "olanzapina", "lansoprazol", "irbesartan",
+"nebivolol", "torasemida", "pregabalina", "venlafaxina", "gabapentina",
+"carvedilol", "tamsulosina", "telmisartan", "metoclopramida", "levocetirizina",
+"dexketoprofeno", "deflazacort", "mirtazapina", "ebastina", "propranolol",
+"candesartan", "sildenafilo", "tacrolimus", "amlodipino/valsartan", "ezetimiba",
+"levonorgestrel", "raltegravir", "donepezilo", "fexofenadina", "clortalidona",
+"trazodona", "levetiracetam", "solifenacina", "rivaroxaban", "glimepirida",
+"memantina"
         ]
 
     def num_tokens(self, text: str) -> int:
