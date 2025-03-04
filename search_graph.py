@@ -21,10 +21,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Minimum relevance score for a result to be considered valid
-MIN_RELEVANCE_THRESHOLD = 20
+MIN_RELEVANCE_THRESHOLD = 10
 
 # Maximum number of medications to return
-MAX_RESULTS = 5
+MAX_RESULTS = 8
 
 @dataclass
 class QueryIntent:
