@@ -5,7 +5,7 @@ load_dotenv()
 
 class Config:
     # OpenAI Model Configuration for v0.27.8
-    CHAT_MODEL = "gpt-4o-mini"  # Compatible with older OpenAI SDK
+    CHAT_MODEL = "gpt-O3-mini"  # Compatible with older OpenAI SDK
     EMBEDDING_MODEL = "text-embedding-ada-002"
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     
