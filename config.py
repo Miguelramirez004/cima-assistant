@@ -9,6 +9,10 @@ class Config:
     EMBEDDING_MODEL = "text-embedding-ada-002"
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     
+    # Perplexity API Configuration
+    PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+    PERPLEXITY_MODEL = "sonar-pro"  # Sonar model with reasoning capabilities
+    
     # CIMA API Configuration
     CIMA_BASE_URL = "https://cima.aemps.es/cima/rest"
     
@@ -16,6 +20,9 @@ class Config:
     MAX_RESULTS = 5  # Maximum number of medication results to retrieve
     CACHE_ENABLED = True  # Enable/disable caching
     CACHE_TIMEOUT = 3600  # Cache timeout in seconds (1 hour)
+    
+    # Feature Flags
+    USE_PERPLEXITY = True  # Whether to use Perplexity for CIMA consultations
     
     # RAG Settings
     CONTEXT_SIZE = 8000  # Maximum context size in tokens
