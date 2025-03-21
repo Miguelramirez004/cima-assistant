@@ -38,35 +38,32 @@ class PerplexityClient:
         """
         # Construct a prompt instructing the API to output structured information with reasoning steps and references
         prompt = f"""
-Eres un experto farmacéutico especializado en medicamentos registrados en CIMA (Centro de Información online de Medicamentos de la AEMPS).
+Eres un experto farmacéutico especializado en medicamentos.
 
-Tu objetivo es proporcionar información precisa y detallada sobre medicamentos en respuesta a consultas de usuarios.
+Tu tarea es responder a consultas sobre medicamentos, sus efectos, usos, contraindicaciones, etc.
+Para esta consulta específica, debes:
 
-Cuando respondas a la siguiente consulta:
-1. Primero, muestra tu **proceso de razonamiento** paso a paso de forma explícita
-2. Luego proporciona una **respuesta completa** basada en tu razonamiento
-3. Finalmente, incluye una sección de **referencias** con al menos 3-5 fuentes específicas utilizadas
+1. Realizar un análisis detallado paso a paso
+2. Proporcionar una respuesta completa
+3. Incluir referencias a fuentes médicas confiables
 
-Utiliza el siguiente formato:
+Estructura tu respuesta con exactamente estas secciones:
 
 ## PROCESO DE RAZONAMIENTO
-- Paso 1: [Un análisis inicial de la consulta]
-- Paso 2: [Considerar las posibles interpretaciones o aspectos relevantes]
-- Paso 3: [Evaluar la información más importante a incluir]
-- Paso 4: [Identificar posibles precauciones o advertencias relevantes]
-- Paso 5: [Determinar conclusiones y recomendaciones]
+[Aquí desarrolla paso a paso tu análisis del problema]
 
 ## RESPUESTA
-[Tu respuesta completa y detallada]
+[Aquí proporciona la respuesta completa]
 
 ## REFERENCIAS
-1. [Título del documento o fuente] - [URL o información de identificación]
-2. [Título del documento o fuente] - [URL o información de identificación]
-3. [Título del documento o fuente] - [URL o información de identificación]
+[Incluye al menos 3 referencias a fuentes médicas]
 
 La consulta es: "{question}"
         """.strip()
 
+        # Log that we're making a Perplexity API request
+        logger.info(f"Sending request to Perplexity API with query: '{question}'")
+        
         # Build the payload
         payload = {
             "model": self.model,
@@ -83,7 +80,6 @@ La consulta es: "{question}"
         
         try:
             # Make the API request
-            logger.info(f"Sending request to Perplexity API for question: {question}")
             response = requests.post(self.base_url, headers=headers, json=payload)
             response.raise_for_status()  # Raise exception for 4XX/5XX responses
             
@@ -93,26 +89,31 @@ La consulta es: "{question}"
             if result.get("choices") and len(result["choices"]) > 0:
                 content = result["choices"][0]["message"]["content"]
                 
+                # Log the raw response for debugging
+                logger.info(f"Raw Perplexity response: {content[:200]}...")
+                
                 # Extract reasoning and references from the structured response
-                reasoning = ""
-                answer = content
-                references = []
-                
-                # Extract reasoning section
                 reasoning_section = self._extract_section(content, "PROCESO DE RAZONAMIENTO", "RESPUESTA")
-                if reasoning_section:
-                    reasoning = reasoning_section
-                
-                # Extract answer section
-                answer_section = self._extract_section(content, "RESPUESTA", "REFERENCIAS")
-                if answer_section:
-                    answer = answer_section
-                
-                # Extract references section
+                answer_section = self._extract_section(content, "RESPUESTA", "REFERENCIAS") 
                 references_section = self._extract_section(content, "REFERENCIAS", None)
-                if references_section:
-                    # Process references into a list
-                    references = self._extract_references(references_section)
+                
+                # If sections aren't found, try alternative methods of extraction
+                if not reasoning_section and not answer_section:
+                    # Try different heading patterns
+                    reasoning_section = self._extract_flexible_section(content, 
+                                                                     ["PROCESO DE RAZONAMIENTO", "RAZONAMIENTO", "ANÁLISIS", "PENSAMIENTO"])
+                    answer_section = self._extract_flexible_section(content, 
+                                                                  ["RESPUESTA", "CONTESTACIÓN", "INFORMACIÓN", "RESULTADO"])
+                    references_section = self._extract_flexible_section(content, 
+                                                                      ["REFERENCIAS", "FUENTES", "BIBLIOGRAFÍA", "CITAS"])
+                
+                # If we still can't extract sections, just use the whole content as the answer
+                if not answer_section:
+                    logger.warning("Could not extract structured sections - using full content as answer")
+                    answer_section = content
+                
+                # Process references into a list
+                references = self._extract_references(references_section) if references_section else []
                 
                 # Update conversation history for context in future questions
                 self.conversation_history.append({"role": "user", "content": question})
@@ -123,8 +124,8 @@ La consulta es: "{question}"
                     self.conversation_history = self.conversation_history[-10:]
                 
                 return {
-                    "answer": answer,
-                    "reasoning": reasoning,
+                    "answer": answer_section,
+                    "reasoning": reasoning_section,
                     "references": references,
                     "full_content": content,
                     "context": "Generado con Perplexity Sonar API",
@@ -171,46 +172,110 @@ La consulta es: "{question}"
     def _extract_section(self, content: str, start_marker: str, end_marker: Optional[str]) -> str:
         """Extract a section from the content between start_marker and end_marker"""
         try:
-            start_index = content.find(f"## {start_marker}")
-            if start_index == -1:
-                return ""
+            # Try multiple variations of the heading marker
+            heading_patterns = [
+                f"## {start_marker}",
+                f"# {start_marker}",
+                f"**{start_marker}**",
+                f"**{start_marker}:**",
+                f"{start_marker}:"
+            ]
             
-            start_index = start_index + len(f"## {start_marker}")
+            # Try each pattern
+            for pattern in heading_patterns:
+                start_index = content.find(pattern)
+                if start_index != -1:
+                    # Found a match
+                    start_index = start_index + len(pattern)
+                    
+                    # Search for end marker if provided
+                    if end_marker:
+                        # Try various formats for end marker
+                        end_patterns = [
+                            f"## {end_marker}",
+                            f"# {end_marker}",
+                            f"**{end_marker}**",
+                            f"**{end_marker}:**",
+                            f"{end_marker}:"
+                        ]
+                        
+                        # Try each end pattern
+                        found_end = False
+                        for end_pattern in end_patterns:
+                            end_index = content.find(end_pattern, start_index)
+                            if end_index != -1:
+                                section = content[start_index:end_index].strip()
+                                found_end = True
+                                break
+                        
+                        if not found_end:
+                            # If no end pattern found, take everything to the end
+                            section = content[start_index:].strip()
+                    else:
+                        # No end marker, take everything to the end
+                        section = content[start_index:].strip()
+                    
+                    # Clean up the section
+                    section = section.strip()
+                    return section
             
-            if end_marker:
-                end_index = content.find(f"## {end_marker}", start_index)
-                if end_index == -1:
-                    section = content[start_index:].strip()
-                else:
-                    section = content[start_index:end_index].strip()
-            else:
-                section = content[start_index:].strip()
+            # No match found for any pattern
+            logger.warning(f"Section not found: {start_marker}")
+            return ""
             
-            return section
         except Exception as e:
             logger.error(f"Error extracting section {start_marker}: {str(e)}")
             return ""
+            
+    def _extract_flexible_section(self, content: str, possible_markers: List[str]) -> str:
+        """Try to extract a section using multiple possible section titles"""
+        for marker in possible_markers:
+            # Try with various end markers
+            for end_marker in ["RESPUESTA", "REFERENCIAS", "CONCLUSIÓN", "CONCLUSION", None]:
+                if marker == end_marker:
+                    continue
+                section = self._extract_section(content, marker, end_marker)
+                if section:
+                    return section
+        return ""
     
     def _extract_references(self, references_section: str) -> List[Dict[str, str]]:
         """Extract references from the references section into a structured format"""
+        if not references_section:
+            return []
+            
         references = []
-        lines = references_section.strip().split('\n')
+        # Split by numbered list patterns
+        potential_refs = re.split(r'\n\s*\d+[\.\)]\s*', references_section)
         
-        for line in lines:
-            line = line.strip()
-            if not line:
+        # If that didn't work well, try splitting by new lines
+        if len(potential_refs) <= 1:
+            potential_refs = references_section.split('\n')
+        
+        for ref in potential_refs:
+            ref = ref.strip()
+            if not ref or ref.isdigit() or len(ref) < 10:  # Skip empty or very short lines
                 continue
                 
-            # Remove leading numbers or bullets
-            line = line.lstrip("0123456789.-*[] \t")
-            
-            # Try to split into title and URL if possible
-            parts = line.split(" - ", 1)
-            if len(parts) == 2:
-                title, url = parts
-                references.append({"title": title.strip(), "url": url.strip()})
+            # Try to extract URL if present
+            url_match = re.search(r'https?://[^\s\)"\']+', ref)
+            if url_match:
+                url = url_match.group(0)
+                title = ref.replace(url, '').strip()
+                # Clean up title
+                title = title.strip(' "\'.,:-')
+                if not title:
+                    title = url
             else:
-                references.append({"title": line, "url": ""})
+                url = ""
+                title = ref
+            
+            # Clean up title
+            title = re.sub(r'^\s*\d+[\.\)]\s*', '', title)  # Remove leading numbers
+            title = title.strip(' "\'.,:-')
+            
+            if title:
+                references.append({"title": title, "url": url})
         
         return references
     
