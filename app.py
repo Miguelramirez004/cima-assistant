@@ -5,7 +5,8 @@ from openai import AsyncOpenAI
 import re
 import os
 from dotenv import load_dotenv
-from formulacion import FormulationAgent, CIMAExpertAgent
+from formulacion import FormulationAgent
+from perplexity_client import PerplexityClient
 from config import Config
 
 # Load environment variables (for local development)
@@ -70,6 +71,23 @@ def get_openai_client():
         
     return AsyncOpenAI(api_key=api_key)
 
+# Global Perplexity client for CIMA consultations
+@st.cache_resource
+def get_perplexity_client():
+    """Get Perplexity client with proper API key handling"""
+    # Try to get API key from Streamlit secrets first (for cloud deployment)
+    try:
+        api_key = st.secrets["PERPLEXITY_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        # Fall back to environment variables or Config
+        api_key = os.getenv("PERPLEXITY_API_KEY") or Config.PERPLEXITY_API_KEY
+    
+    if not api_key:
+        st.error("No se ha encontrado la API key de Perplexity. Verifique los secretos de Streamlit, variables de entorno o el archivo config.py")
+        return None
+        
+    return PerplexityClient(api_key=api_key)
+
 # Initialize session state variables if not already present
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
@@ -81,13 +99,22 @@ if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'current_query' not in st.session_state:
     st.session_state.current_query = ""
+if 'use_langgraph' not in st.session_state:
+    st.session_state.use_langgraph = True
 
-# Check OpenAI API key at startup
+# Check API keys at startup
 openai_client = get_openai_client()
+perplexity_client = get_perplexity_client()
+
 if openai_client:
     st.success("✅ Conexión a OpenAI configurada correctamente")
 else:
     st.error("❌ Error: No se pudo establecer conexión con OpenAI. Por favor configure la API key en los secretos de Streamlit.")
+
+if perplexity_client:
+    st.success("✅ Conexión a Perplexity configurada correctamente")
+else:
+    st.error("❌ Error: No se pudo establecer conexión con Perplexity. Por favor configure la API key en los secretos de Streamlit.")
     
 # Title
 st.title("🧪 CIMA Assistant")
@@ -97,12 +124,35 @@ st.markdown("### *Sistema inteligente de consulta para formulación magistral y 
 with st.sidebar:
     st.header("Información")
     st.markdown("""
-    Este asistente utiliza la API CIMA (Centro de Información online de Medicamentos) de la AEMPS para proporcionar:
+    Este asistente utiliza:
     
-    - Formulaciones magistrales detalladas
-    - Consultas sobre medicamentos
-    - Referencias directas a fichas técnicas
+    - Base de datos CIMA para formulaciones magistrales
+    - Perplexity AI (Sonar Pro) para consultas sobre medicamentos
+    - Referencias a fuentes oficiales
     """)
+    
+    # Add search mode setting for formulation
+    st.header("Ajustes")
+    use_langgraph = st.toggle("Usar búsqueda avanzada para formulación", value=st.session_state.use_langgraph)
+    
+    # Update session state if toggle changed
+    if use_langgraph != st.session_state.use_langgraph:
+        st.session_state.use_langgraph = use_langgraph
+        st.info(f"Modo de búsqueda para formulación: {'Avanzado' if use_langgraph else 'Estándar'}")
+    
+    # Explain Sonar Pro
+    with st.expander("Consultas CIMA - Tecnología"):
+        st.markdown("""
+        Para las consultas de medicamentos, esta aplicación utiliza el modelo Sonar Pro de Perplexity AI, 
+        que proporciona:
+        
+        - Respuestas detalladas basadas en conocimiento médico actualizado
+        - Mayor precisión en la información
+        - Capacidad avanzada de razonamiento para responder consultas complejas
+        
+        A diferencia de la implementación anterior, este modelo proporciona información 
+        más actualizada y contextualizada.
+        """)
     
     st.header("Historial de búsquedas")
     if st.session_state.search_history:
@@ -115,6 +165,8 @@ with st.sidebar:
         st.session_state.search_history = set()
         st.session_state.formulation_history = []
         st.session_state.messages = []
+        if perplexity_client:
+            perplexity_client.clear_history()
         st.rerun()
 
 # Main tabs
@@ -184,6 +236,8 @@ with tab1:
                         st.error("No se puede conectar con OpenAI. Verifique su API key.")
                     else:
                         formulation_agent = FormulationAgent(openai_client)
+                        # Set search mode based on toggle
+                        formulation_agent.use_langgraph = st.session_state.use_langgraph
                         
                         # Get response using our helper function
                         response = run_async(formulation_agent.answer_question, query_fm)
@@ -244,10 +298,10 @@ with tab1:
                     st.error(f"Error: {str(e)}")
 
 with tab2:
-    st.write("### Chat con experto CIMA")
+    st.write("### Chat con experto CIMA (Perplexity Sonar Pro)")
     st.markdown("""
     <div class="info-box">
-    Realice consultas sobre medicamentos registrados en CIMA. 
+    Realice consultas sobre medicamentos utilizando el modelo Sonar Pro de Perplexity AI.
     Puede preguntar sobre indicaciones, contraindicaciones, efectos adversos, etc.
     </div>
     """, unsafe_allow_html=True)
@@ -277,31 +331,26 @@ with tab2:
             progress_placeholder = st.empty()
             status_text = st.empty()
             
-            with st.spinner("Buscando información en CIMA..."):
+            with st.spinner("Consultando base de conocimiento médico..."):
                 try:
                     # Show progress updates
                     with progress_placeholder.container():
                         progress_bar = st.progress(0)
                     
-                    status_text.text("Consultando CIMA...")
+                    status_text.text("Procesando su consulta...")
                     progress_bar.progress(30)
                     
-                    # Create agent for this specific request
-                    openai_client = get_openai_client()
-                    if not openai_client:
-                        st.error("No se puede conectar con OpenAI. Verifique su API key.")
+                    # Get Perplexity client
+                    perplexity_client = get_perplexity_client()
+                    if not perplexity_client:
+                        st.error("No se puede conectar con Perplexity. Verifique su API key.")
                     else:
-                        cima_agent = CIMAExpertAgent(openai_client)
-                        
-                        # Copy conversation history to agent
-                        for msg in st.session_state.messages[:-1]:  # Exclude the most recent message
-                            if msg["role"] == "user":
-                                cima_agent.conversation_history.append({"role": "user", "content": msg["content"]})
-                            else:
-                                cima_agent.conversation_history.append({"role": "assistant", "content": msg["content"]})
-                        
-                        # Process response using our helper function
-                        response = run_async(cima_agent.chat, prompt)
+                        # Process the request (fallback to sync method if async fails)
+                        try:
+                            response = run_async(perplexity_client.ask_cima_question_async, prompt)
+                        except Exception as async_err:
+                            st.warning(f"Modo asíncrono no disponible: {str(async_err)}", icon="⚠️")
+                            response = perplexity_client.ask_cima_question(prompt)
                         
                         # Update progress
                         status_text.text("Generando respuesta...")
@@ -316,20 +365,25 @@ with tab2:
                         st.markdown(response["answer"])
                         
                         # Show sources in expander
-                        with st.expander("Ver fuentes"):
+                        with st.expander("Información sobre la fuente"):
                             st.markdown(response["context"])
-                            
-                        # Clean up resources
-                        run_async(cima_agent.close)
+                            st.markdown("Esta respuesta ha sido generada utilizando el modelo Perplexity Sonar Pro, "
+                                   "que integra conocimiento médico actualizado con capacidades de razonamiento avanzadas.")
                 except Exception as e:
-                    st.markdown(f"Error: {str(e)}")
+                    error_message = f"Error: {str(e)}"
+                    st.markdown(error_message)
+                    st.session_state.messages.append({"role": "assistant", "content": error_message})
+                    raise
                     
-        # Add to session state
-        st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
+        # Add to session state (only if successful)
+        if "answer" in response and response["success"]:
+            st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
     
     # Button for new conversation
     if st.button("Nueva conversación", key="new_chat"):
         st.session_state.messages = []
+        if perplexity_client:
+            perplexity_client.clear_history()
         st.rerun()
 
 with tab3:
