@@ -15,7 +15,7 @@ load_dotenv()
 # Configure page
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
-# Simple CSS
+# Custom CSS styling
 st.markdown("""
 <style>
     .main .block-container {padding-top: 2rem;}
@@ -23,11 +23,57 @@ st.markdown("""
     div.stButton > button:first-child {background-color: #4CAF50; color: white;}
     div.stButton > button:hover {background-color: #45a049;}
     
+    /* Info box styling */
     .info-box {
         background-color: #2E7D32;
         border-left: 6px solid #1B5E20;
         padding: 10px;
         margin-bottom: 10px;
+    }
+    
+    /* Reasoning box styling */
+    .reasoning-box {
+        background-color: #f8f9fa;
+        border-left: 6px solid #10a37f;
+        padding: 15px;
+        margin-bottom: 15px;
+        border-radius: 4px;
+    }
+    
+    /* References styling */
+    .reference-item {
+        background-color: #f0f2f6;
+        border-left: 4px solid #4b5f84;
+        padding: 10px;
+        margin-bottom: 8px;
+        border-radius: 4px;
+        font-size: 0.9em;
+    }
+    
+    .reference-title {
+        font-weight: bold;
+        color: #2c3e50;
+    }
+    
+    .reference-url {
+        color: #3498db;
+        word-break: break-all;
+    }
+    
+    /* Animated thinking indicator */
+    @keyframes thinking-animation {
+        0% { opacity: 0.4; }
+        50% { opacity: 1.0; }
+        100% { opacity: 0.4; }
+    }
+    
+    .thinking-indicator {
+        animation: thinking-animation 1.5s infinite;
+        background-color: #f0f2f6;
+        border-left: 6px solid #3498db;
+        padding: 15px;
+        margin-bottom: 15px;
+        border-radius: 4px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -101,6 +147,8 @@ if 'current_query' not in st.session_state:
     st.session_state.current_query = ""
 if 'use_langgraph' not in st.session_state:
     st.session_state.use_langgraph = True
+if 'show_reasoning' not in st.session_state:
+    st.session_state.show_reasoning = True
 
 # Check API keys at startup
 openai_client = get_openai_client()
@@ -140,6 +188,12 @@ with st.sidebar:
         st.session_state.use_langgraph = use_langgraph
         st.info(f"Modo de búsqueda para formulación: {'Avanzado' if use_langgraph else 'Estándar'}")
     
+    # Add toggle for showing reasoning process
+    show_reasoning = st.toggle("Mostrar proceso de razonamiento", value=st.session_state.show_reasoning)
+    if show_reasoning != st.session_state.show_reasoning:
+        st.session_state.show_reasoning = show_reasoning
+        st.info(f"Visualización de razonamiento: {'Activado' if show_reasoning else 'Desactivado'}")
+    
     # Explain Sonar Pro
     with st.expander("Consultas CIMA - Tecnología"):
         st.markdown("""
@@ -147,11 +201,10 @@ with st.sidebar:
         que proporciona:
         
         - Respuestas detalladas basadas en conocimiento médico actualizado
+        - Proceso de razonamiento visible para entender cómo llega a sus conclusiones
+        - Referencias específicas de fuentes médicas y farmacéuticas
         - Mayor precisión en la información
         - Capacidad avanzada de razonamiento para responder consultas complejas
-        
-        A diferencia de la implementación anterior, este modelo proporciona información 
-        más actualizada y contextualizada.
         """)
     
     st.header("Historial de búsquedas")
@@ -301,8 +354,8 @@ with tab2:
     st.write("### Chat con experto CIMA (Perplexity Sonar Pro)")
     st.markdown("""
     <div class="info-box">
-    Realice consultas sobre medicamentos utilizando el modelo Sonar Pro de Perplexity AI.
-    Puede preguntar sobre indicaciones, contraindicaciones, efectos adversos, etc.
+    Realice consultas sobre medicamentos utilizando tecnología avanzada de IA (Perplexity Sonar Pro).
+    El sistema mostrará su proceso de razonamiento paso a paso y proporcionará referencias específicas.
     </div>
     """, unsafe_allow_html=True)
     
@@ -313,7 +366,38 @@ with tab2:
     with chat_container:
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+                # If the message has reasoning and references, display structured content
+                if message["role"] == "assistant" and "reasoning" in message and "references" in message:
+                    
+                    # Show reasoning if enabled
+                    if st.session_state.show_reasoning and message["reasoning"]:
+                        st.markdown("""<div class="reasoning-box">
+                        <h4>💭 Proceso de Razonamiento</h4>
+                        {reasoning}
+                        </div>
+                        """.format(reasoning=message["reasoning"]), unsafe_allow_html=True)
+                    
+                    # Show main answer
+                    st.markdown(message["content"])
+                    
+                    # Show references
+                    if message["references"] and len(message["references"]) > 0:
+                        st.markdown("<h4>📚 Referencias</h4>", unsafe_allow_html=True)
+                        for ref in message["references"]:
+                            title = ref.get("title", "")
+                            url = ref.get("url", "")
+                            if url:
+                                st.markdown(f"""<div class="reference-item">
+                                <span class="reference-title">{title}</span><br>
+                                <a href="{url}" target="_blank" class="reference-url">{url}</a>
+                                </div>""", unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"""<div class="reference-item">
+                                <span class="reference-title">{title}</span>
+                                </div>""", unsafe_allow_html=True)
+                else:
+                    # Regular message display
+                    st.markdown(message["content"])
     
     # Chat input
     if prompt := st.chat_input("Escriba su consulta sobre medicamentos..."):
@@ -327,19 +411,17 @@ with tab2:
 
         # Process and display assistant response
         with st.chat_message("assistant"):
-            # Progress indicators
-            progress_placeholder = st.empty()
-            status_text = st.empty()
+            # Create a placeholder for the "thinking" animation
+            thinking_placeholder = st.empty()
+            thinking_placeholder.markdown("""
+            <div class="thinking-indicator">
+            <h4>💭 Pensando...</h4>
+            <p>Estoy analizando la información médica disponible sobre su consulta. Este proceso puede tomar unos segundos...</p>
+            </div>
+            """, unsafe_allow_html=True)
             
             with st.spinner("Consultando base de conocimiento médico..."):
                 try:
-                    # Show progress updates
-                    with progress_placeholder.container():
-                        progress_bar = st.progress(0)
-                    
-                    status_text.text("Procesando su consulta...")
-                    progress_bar.progress(30)
-                    
                     # Get Perplexity client
                     perplexity_client = get_perplexity_client()
                     if not perplexity_client:
@@ -352,33 +434,57 @@ with tab2:
                             st.warning(f"Modo asíncrono no disponible: {str(async_err)}", icon="⚠️")
                             response = perplexity_client.ask_cima_question(prompt)
                         
-                        # Update progress
-                        status_text.text("Generando respuesta...")
-                        progress_bar.progress(80)
+                        # Clear the thinking animation
+                        thinking_placeholder.empty()
                         
-                        # Clear progress indicators
-                        progress_bar.progress(100)
-                        status_text.empty()
-                        progress_placeholder.empty()
+                        # Extract structured data from response
+                        reasoning = response.get("reasoning", "")
+                        answer = response.get("answer", "")
+                        references = response.get("references", [])
                         
-                        # Show response
-                        st.markdown(response["answer"])
+                        # Show reasoning if enabled
+                        if st.session_state.show_reasoning and reasoning:
+                            st.markdown("""<div class="reasoning-box">
+                            <h4>💭 Proceso de Razonamiento</h4>
+                            {reasoning}
+                            </div>
+                            """.format(reasoning=reasoning), unsafe_allow_html=True)
                         
-                        # Show sources in expander
-                        with st.expander("Información sobre la fuente"):
-                            st.markdown(response["context"])
-                            st.markdown("Esta respuesta ha sido generada utilizando el modelo Perplexity Sonar Pro, "
-                                   "que integra conocimiento médico actualizado con capacidades de razonamiento avanzadas.")
+                        # Show the main answer
+                        st.markdown(answer)
+                        
+                        # Show references
+                        if references and len(references) > 0:
+                            st.markdown("<h4>📚 Referencias</h4>", unsafe_allow_html=True)
+                            for ref in references:
+                                title = ref.get("title", "")
+                                url = ref.get("url", "")
+                                if url:
+                                    st.markdown(f"""<div class="reference-item">
+                                    <span class="reference-title">{title}</span><br>
+                                    <a href="{url}" target="_blank" class="reference-url">{url}</a>
+                                    </div>""", unsafe_allow_html=True)
+                                else:
+                                    st.markdown(f"""<div class="reference-item">
+                                    <span class="reference-title">{title}</span>
+                                    </div>""", unsafe_allow_html=True)
+                        
+                        # Create a full message with all components for history
+                        full_message = {
+                            "role": "assistant", 
+                            "content": answer,
+                            "reasoning": reasoning,
+                            "references": references
+                        }
+                        
+                        # Add to session state
+                        st.session_state.messages.append(full_message)
                 except Exception as e:
                     error_message = f"Error: {str(e)}"
                     st.markdown(error_message)
                     st.session_state.messages.append({"role": "assistant", "content": error_message})
                     raise
                     
-        # Add to session state (only if successful)
-        if "answer" in response and response["success"]:
-            st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
-    
     # Button for new conversation
     if st.button("Nueva conversación", key="new_chat"):
         st.session_state.messages = []
