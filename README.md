@@ -21,6 +21,8 @@ La aplicación integra la API CIMA de la AEMPS (Agencia Española de Medicamento
 
 - **Consultas sobre medicamentos con Perplexity Sonar Pro**:
   - Chatbot conversacional con memoria de contexto
+  - **Visualización del proceso de razonamiento en tiempo real**
+  - **Referencias bibliográficas específicas para cada consulta**
   - Respuestas avanzadas con capacidad de razonamiento
   - Información actualizada y precisa sobre medicamentos
   - Consultas sobre indicaciones, contraindicaciones, efectos adversos, etc.
@@ -72,14 +74,20 @@ streamlit run src/main.py
 
 1. Seleccione la pestaña "Consultas CIMA"
 2. Escriba su consulta sobre medicamentos en el campo de chat
-3. El asistente proporcionará información detallada utilizando el modelo Sonar Pro
-4. Mantenga conversaciones con contexto para consultas más complejas
+3. Observe el proceso de razonamiento en tiempo real mientras la IA analiza su consulta
+4. Revise la respuesta detallada y las referencias bibliográficas proporcionadas
+5. Mantenga conversaciones con contexto para consultas más complejas
+
+### Ajustes Adicionales
+
+- **Visualización de razonamiento**: Puede activar o desactivar la visualización del proceso de razonamiento en la barra lateral
+- **Búsqueda avanzada**: Para las formulaciones magistrales, puede elegir entre el método de búsqueda estándar o avanzado
 
 ## Tecnologías
 
 - **Streamlit**: Framework para la interfaz de usuario
 - **OpenAI API**: Modelos de lenguaje para generación de formulaciones
-- **Perplexity Sonar Pro API**: Modelo avanzado de IA para consultas sobre medicamentos
+- **Perplexity Sonar Pro API**: Modelo avanzado de IA para consultas sobre medicamentos con razonamiento visible
 - **CIMA API**: API oficial de la AEMPS para consulta de medicamentos
 - **Python**: Lenguaje de programación principal
 - **aiohttp/requests**: Clientes HTTP para comunicación con APIs
