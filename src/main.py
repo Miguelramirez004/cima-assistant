@@ -9,9 +9,10 @@ import os
 from datetime import datetime
 
 # Import agent modules
-from formulacion import FormulationAgent, CIMAExpertAgent
+from formulacion import FormulationAgent
 from config import Config
 from openai_client import create_async_openai_client
+from perplexity_client import PerplexityClient
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -70,15 +71,17 @@ def run_async(async_func, *args, **kwargs):
     # Run the async code in a separate thread with its own event loop
     return executor.submit(run_in_executor).result()
 
-# Initialize async resources with proper lifecycle management
+# Initialize resources with proper lifecycle management
 @st.cache_resource
-def init_agents():
+def init_resources():
     """Initialize OpenAI client and agents with proper async resource management"""
     openai_client = create_async_openai_client(api_key=Config.OPENAI_API_KEY)
     
-    # Initialize the agents with the client
+    # Initialize the formulation agent
     formulation_agent = FormulationAgent(openai_client)
-    cima_expert_agent = CIMAExpertAgent(openai_client)
+    
+    # Initialize Perplexity client for CIMA consultations
+    perplexity_client = PerplexityClient(api_key=Config.PERPLEXITY_API_KEY)
     
     # Register cleanup handler for Streamlit session end
     def cleanup_resources():
@@ -87,11 +90,9 @@ def init_agents():
             # Run the close methods in a new event loop
             cleanup_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(cleanup_loop)
-            cleanup_loop.run_until_complete(asyncio.gather(
-                formulation_agent.close(), 
-                cima_expert_agent.close(),
-                return_exceptions=True
-            ))
+            
+            # Only close the formulation agent (Perplexity client doesn't need closing)
+            cleanup_loop.run_until_complete(formulation_agent.close())
             cleanup_loop.close()
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}")
@@ -100,7 +101,7 @@ def init_agents():
     import atexit
     atexit.register(cleanup_resources)
     
-    return formulation_agent, cima_expert_agent
+    return formulation_agent, perplexity_client
 
 # Custom CSS with just the essential styling
 st.markdown("""
@@ -132,8 +133,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Initialize session state variables more efficiently
-if 'agents' not in st.session_state:
-    st.session_state.agents = init_agents()
+if 'resources' not in st.session_state:
+    st.session_state.resources = init_resources()
     st.session_state.chat_history = []
     st.session_state.formulation_history = []
     st.session_state.search_history = set()
@@ -152,33 +153,34 @@ with st.sidebar:
     Este asistente utiliza la API CIMA (Centro de Información online de Medicamentos) de la AEMPS para proporcionar:
     
     - Formulaciones magistrales detalladas
-    - Consultas sobre medicamentos
-    - Referencias directas a fichas técnicas
+    - Consultas sobre medicamentos con IA avanzada
+    - Referencias a información oficial
     """)
     
-    # Add LangGraph search toggle
+    # Add search mode setting for formulation (still using LangGraph there)
     st.header("Ajustes")
-    use_langgraph = st.toggle("Usar búsqueda avanzada (LangGraph)", value=st.session_state.use_langgraph)
+    use_langgraph = st.toggle("Usar búsqueda avanzada para formulación", value=st.session_state.use_langgraph)
     
     # Update session state and agents if toggle changed
     if use_langgraph != st.session_state.use_langgraph:
         st.session_state.use_langgraph = use_langgraph
-        # Update agent settings
-        if st.session_state.agents:
-            st.session_state.agents[0].use_langgraph = use_langgraph
-            st.session_state.agents[1].use_langgraph = use_langgraph
-        st.info(f"Modo de búsqueda: {'Avanzado (LangGraph)' if use_langgraph else 'Estándar'}")
+        # Update formulation agent settings
+        if st.session_state.resources and st.session_state.resources[0]:
+            st.session_state.resources[0].use_langgraph = use_langgraph
+        st.info(f"Modo de búsqueda para formulación: {'Avanzado' if use_langgraph else 'Estándar'}")
     
     # Add toggle details explanation
-    with st.expander("¿Qué es la búsqueda avanzada?"):
+    with st.expander("Consultas CIMA - Tecnología"):
         st.markdown("""
-        La búsqueda avanzada utiliza un sistema basado en LangGraph que mejora significativamente los resultados, especialmente para:
+        Para las consultas de medicamentos, esta aplicación utiliza el modelo Sonar Pro de Perplexity AI, 
+        que proporciona:
         
-        - Medicamentos específicos (como "MINOXIDIL BIORGA")
-        - Casos donde la búsqueda alfabética por defecto devuelve "abacavir" u otros resultados irrelevantes
-        - Principios activos con variantes de escritura o acentos
+        - Respuestas detalladas basadas en conocimiento médico actualizado
+        - Mayor precisión en la información
+        - Capacidad avanzada de razonamiento para responder consultas complejas
         
-        Esta tecnología implementa un sistema de flujo de trabajo que prioriza la relevancia de los resultados mediante múltiples estrategias de búsqueda.
+        A diferencia de la implementación anterior, este modelo no depende de una búsqueda y recuperación 
+        explícita en la base de datos CIMA, sino que utiliza su conocimiento integrado sobre medicamentos.
         """)
     
     st.header("Historial de búsquedas")
@@ -192,17 +194,13 @@ with st.sidebar:
         # Reset state
         st.session_state.search_history = set()
         st.session_state.formulation_history = []
-        if st.session_state.agents and st.session_state.agents[1]:
-            # Add a clear_history method if it doesn't exist
-            if hasattr(st.session_state.agents[1], 'clear_history'):
-                st.session_state.agents[1].clear_history()
-            else:
-                # If no clear_history method, clear conversation_history directly
-                st.session_state.agents[1].conversation_history = []
+        if st.session_state.resources and st.session_state.resources[1]:
+            # Clear Perplexity client history
+            st.session_state.resources[1].clear_history()
         st.session_state.messages = []
         st.rerun()
 
-    # Add diagnostic button
+    # Add diagnostic button (keep for CIMA API testing)
     if st.button("Diagnóstico CIMA", key="diagnostico"):
         st.info("Ejecutando diagnóstico de conexión con CIMA...")
         
@@ -352,10 +350,10 @@ with tab1:
                     progress_bar.progress(25)
                     
                     # Set the agent's search mode based on current setting
-                    st.session_state.agents[0].use_langgraph = st.session_state.use_langgraph
+                    st.session_state.resources[0].use_langgraph = st.session_state.use_langgraph
                     
                     # Process response using our managed event loop
-                    response = run_async(st.session_state.agents[0].answer_question(query_fm))
+                    response = run_async(st.session_state.resources[0].answer_question(query_fm))
                     
                     # Update progress
                     status_text.text("Generando formulación...")
@@ -414,7 +412,7 @@ with tab2:
     st.write("### Chat con experto CIMA")
     st.markdown("""
     <div class="info-box">
-    Realice consultas sobre medicamentos registrados en CIMA. 
+    Realice consultas sobre medicamentos utilizando tecnología avanzada de IA (Perplexity Sonar Pro).
     Puede preguntar sobre indicaciones, contraindicaciones, efectos adversos, etc.
     </div>
     """, unsafe_allow_html=True)
@@ -438,32 +436,32 @@ with tab2:
             st.markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        # Check if prompt contains uppercase medication name like MINOXIDIL BIORGA
-        uppercase_names = re.findall(r'\b[A-Z]{2,}\s+[A-Z]{2,}\b', prompt.upper())
-        if uppercase_names:
-            info_msg = st.empty()
-            info_msg.info(f"⚠️ Se ha detectado un nombre específico de medicamento: {uppercase_names[0]}. Se realizará una búsqueda directa.")
-
-        # Process and display assistant response
+        # Process and display assistant response using Perplexity
         with st.chat_message("assistant"):
             # Progress indicators
             progress_placeholder = st.empty()
             status_text = st.empty()
             
-            with st.spinner("Buscando información en CIMA..."):
+            with st.spinner("Buscando información..."):
                 try:
                     # Show progress updates
                     with progress_placeholder.container():
                         progress_bar = st.progress(0)
                     
-                    status_text.text("Consultando CIMA...")
+                    status_text.text("Consultando base de conocimiento...")
                     progress_bar.progress(30)
                     
-                    # Set the agent's search mode based on current setting
-                    st.session_state.agents[1].use_langgraph = st.session_state.use_langgraph
+                    # Get the perplexity client
+                    perplexity_client = st.session_state.resources[1]
                     
-                    # Process response using our managed event loop
-                    response = run_async(st.session_state.agents[1].chat(prompt))
+                    # Process query with Perplexity
+                    try:
+                        # Try using async method
+                        response = run_async(perplexity_client.ask_cima_question_async, prompt)
+                    except Exception as async_error:
+                        # Fall back to sync method if async fails
+                        logger.warning(f"Async Perplexity call failed, falling back to sync: {str(async_error)}")
+                        response = perplexity_client.ask_cima_question(prompt)
                     
                     # Update progress
                     status_text.text("Generando respuesta...")
@@ -473,35 +471,32 @@ with tab2:
                     progress_bar.progress(100)
                     status_text.empty()
                     progress_placeholder.empty()
-                    if uppercase_names:
-                        info_msg.empty()  # Remove info message if present
                     
                     # Show response
                     st.markdown(response["answer"])
                     
-                    # Show sources in expander
-                    with st.expander("Ver fuentes"):
+                    # Show a simpler context for Perplexity
+                    with st.expander("Información sobre la fuente"):
                         st.markdown(response["context"])
-                        
-                    # Add to session state (MOVED INSIDE TRY BLOCK)
+                        st.markdown("Esta respuesta ha sido generada utilizando el modelo Perplexity Sonar Pro, "
+                                   "que integra conocimiento médico actualizado con capacidades de razonamiento avanzadas.")
+                    
+                    # Add to session state
                     st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
                     
                 except Exception as e:
-                    st.markdown(f"Error: {str(e)}")
-                    logger.error(f"Error in chat response: {str(e)}")
-                    # Add error message to session state so conversation continues
                     error_message = f"Lo siento, ha ocurrido un error al procesar su consulta: {str(e)}"
+                    st.markdown(error_message)
+                    logger.error(f"Error in Perplexity chat response: {str(e)}")
+                    # Add error message to session state so conversation continues
                     st.session_state.messages.append({"role": "assistant", "content": error_message})
     
     # Button for new conversation
     if st.button("Nueva conversación", key="new_chat"):
         st.session_state.messages = []
-        # Make sure clear_history exists before calling it
-        if hasattr(st.session_state.agents[1], 'clear_history'):
-            st.session_state.agents[1].clear_history()
-        else:
-            # If no clear_history method, clear conversation_history directly
-            st.session_state.agents[1].conversation_history = []
+        # Clear Perplexity history
+        if st.session_state.resources and st.session_state.resources[1]:
+            st.session_state.resources[1].clear_history()
         st.rerun()
 
 with tab3:
