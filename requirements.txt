@@ -6,3 +6,5 @@ httpx==0.24.1
 nest-asyncio==1.5.8
 tiktoken==0.5.1
 pydantic==2.5.2
+requests==2.31.0
+backoff==2.2.1
