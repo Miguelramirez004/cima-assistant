@@ -11,7 +11,7 @@ class Config:
     
     # Perplexity API Configuration
     PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
-    PERPLEXITY_MODEL = "sonar-reasoning"  # Sonar model with reasoning capabilities
+    PERPLEXITY_MODEL = "sonar"  # Sonar model with reasoning capabilities
     
     # CIMA API Configuration
     CIMA_BASE_URL = "https://cima.aemps.es/cima/rest"
