@@ -106,6 +106,11 @@ def init_resources():
 # Custom CSS with just the essential styling
 st.markdown("""
 <style>
+    /* Apple-style font for entire app */
+    html, body, [class*="css"] {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif !important;
+    }
+    
     .main .block-container {padding-top: 2rem;}
     .stTabs [data-baseweb="tab-panel"] {padding-top: 1rem;}
     div.stButton > button:first-child {background-color: #4CAF50; color: white;}
@@ -174,6 +179,18 @@ st.markdown("""
         margin-bottom: 15px;
         border-radius: 4px;
     }
+    
+    /* Debug info */
+    .debug-info {
+        background-color: #f8f9fa;
+        border: 1px solid #ddd;
+        padding: 10px;
+        margin-top: 10px;
+        font-size: 0.8em;
+        font-family: monospace;
+        white-space: pre-wrap;
+        overflow-x: auto;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -187,6 +204,7 @@ if 'resources' not in st.session_state:
     st.session_state.current_query = ""
     st.session_state.use_langgraph = True  # Default to using the improved search
     st.session_state.show_reasoning = True  # New setting for showing reasoning
+    st.session_state.debug_mode = False    # Debug mode
 
 # Title and description
 st.title("🧪 CIMA Assistant")
@@ -221,18 +239,13 @@ with st.sidebar:
         st.session_state.show_reasoning = show_reasoning
         st.info(f"Visualización de razonamiento: {'Activado' if show_reasoning else 'Desactivado'}")
     
-    # Add toggle details explanation
-    with st.expander("Consultas CIMA - Tecnología"):
-        st.markdown("""
-        Para las consultas de medicamentos, esta aplicación utiliza el modelo Sonar Pro de Perplexity AI, 
-        que proporciona:
-        
-        - Respuestas detalladas basadas en conocimiento médico actualizado
-        - Proceso de razonamiento visible para entender cómo llega a sus conclusiones
-        - Referencias específicas de fuentes médicas y farmacéuticas
-        - Mayor precisión en la información
-        - Capacidad avanzada de razonamiento para responder consultas complejas
-        """)
+    # Debug mode toggle (hidden in production, enable with query param ?debug=true)
+    debug_param = st.query_params.get("debug")
+    if debug_param == "true":
+        debug_mode = st.toggle("Modo depuración", value=st.session_state.debug_mode)
+        if debug_mode != st.session_state.debug_mode:
+            st.session_state.debug_mode = debug_mode
+            st.info(f"Modo depuración: {'Activado' if debug_mode else 'Desactivado'}")
     
     st.header("Historial de búsquedas")
     if st.session_state.search_history:
@@ -460,13 +473,24 @@ with tab1:
                     logger.error(f"Error processing formulation query: {str(e)}")
 
 with tab2:
-    st.write("### Chat con experto CIMA (Perplexity Sonar Pro)")
+    st.write("### Chat con experto CIMA")
     st.markdown("""
     <div class="info-box">
-    Realice consultas sobre medicamentos utilizando tecnología avanzada de IA (Perplexity Sonar Pro).
-    El sistema mostrará su proceso de razonamiento paso a paso y proporcionará referencias específicas.
+    Realice consultas sobre medicamentos.
+    Puede preguntar sobre indicaciones, contraindicaciones, dosis, efectos secundarios, etc.
     </div>
     """, unsafe_allow_html=True)
+    
+    # Example section
+    with st.expander("Ver ejemplos de consultas"):
+        st.markdown("""
+        - ¿Cuáles son los efectos secundarios del ibuprofeno?
+        - ¿Qué dosis de paracetamol es segura para niños?
+        - ¿Qué interacciones tiene la simvastatina con otros medicamentos?
+        - ¿Cuáles son las contraindicaciones del omeprazol?
+        - ¿Es seguro tomar metformina durante el embarazo?
+        - ¿Cuál es la diferencia entre lorazepam y diazepam?
+        """)
     
     # Chat container
     chat_container = st.container()
@@ -549,10 +573,33 @@ with tab2:
                     # Clear the thinking animation
                     thinking_placeholder.empty()
                     
+                    # Show debug info if enabled
+                    if st.session_state.debug_mode:
+                        st.markdown("""<div class="debug-info">
+                        Raw response length: {length}
+                        Has 'answer': {has_answer}
+                        Has 'reasoning': {has_reasoning}
+                        Has 'references': {has_references}
+                        References count: {ref_count}
+                        </div>""".format(
+                            length=len(response.get("full_content", "")),
+                            has_answer="Yes" if response.get("answer") else "No",
+                            has_reasoning="Yes" if response.get("reasoning") else "No", 
+                            has_references="Yes" if response.get("references") else "No",
+                            ref_count=len(response.get("references", []))
+                        ), unsafe_allow_html=True)
+                    
                     # Extract structured data from response
                     reasoning = response.get("reasoning", "")
                     answer = response.get("answer", "")
                     references = response.get("references", [])
+                    
+                    # Ensure we have a valid answer (fallback to full content if needed)
+                    if not answer and "full_content" in response:
+                        answer = response["full_content"]
+                        # Add a note about parsing issues
+                        if "full_content" in response and response["full_content"]:
+                            answer = "**Nota:** Hubo un problema al estructurar la respuesta, pero aquí está la información:\n\n" + answer
                     
                     # Show reasoning if enabled
                     if st.session_state.show_reasoning and reasoning:
