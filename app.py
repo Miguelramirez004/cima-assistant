@@ -18,6 +18,11 @@ st.set_page_config(page_title="CIMA Assistant", layout="wide")
 # Custom CSS styling
 st.markdown("""
 <style>
+    /* Apple-style font for entire app */
+    html, body, [class*="css"] {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif !important;
+    }
+    
     .main .block-container {padding-top: 2rem;}
     .stTabs [data-baseweb="tab-panel"] {padding-top: 1rem;}
     div.stButton > button:first-child {background-color: #4CAF50; color: white;}
@@ -150,19 +155,9 @@ if 'use_langgraph' not in st.session_state:
 if 'show_reasoning' not in st.session_state:
     st.session_state.show_reasoning = True
 
-# Check API keys at startup
+# Silently initialize clients without showing status messages
 openai_client = get_openai_client()
 perplexity_client = get_perplexity_client()
-
-if openai_client:
-    st.success("✅ Conexión a OpenAI configurada correctamente")
-else:
-    st.error("❌ Error: No se pudo establecer conexión con OpenAI. Por favor configure la API key en los secretos de Streamlit.")
-
-if perplexity_client:
-    st.success("✅ Conexión a Perplexity configurada correctamente")
-else:
-    st.error("❌ Error: No se pudo establecer conexión con Perplexity. Por favor configure la API key en los secretos de Streamlit.")
     
 # Title
 st.title("🧪 CIMA Assistant")
@@ -175,7 +170,7 @@ with st.sidebar:
     Este asistente utiliza:
     
     - Base de datos CIMA para formulaciones magistrales
-    - Perplexity AI (Sonar Pro) para consultas sobre medicamentos
+    - Consultas sobre medicamentos
     - Referencias a fuentes oficiales
     """)
     
@@ -193,19 +188,6 @@ with st.sidebar:
     if show_reasoning != st.session_state.show_reasoning:
         st.session_state.show_reasoning = show_reasoning
         st.info(f"Visualización de razonamiento: {'Activado' if show_reasoning else 'Desactivado'}")
-    
-    # Explain Sonar Pro
-    with st.expander("Consultas CIMA - Tecnología"):
-        st.markdown("""
-        Para las consultas de medicamentos, esta aplicación utiliza el modelo Sonar Pro de Perplexity AI, 
-        que proporciona:
-        
-        - Respuestas detalladas basadas en conocimiento médico actualizado
-        - Proceso de razonamiento visible para entender cómo llega a sus conclusiones
-        - Referencias específicas de fuentes médicas y farmacéuticas
-        - Mayor precisión en la información
-        - Capacidad avanzada de razonamiento para responder consultas complejas
-        """)
     
     st.header("Historial de búsquedas")
     if st.session_state.search_history:
@@ -351,13 +333,24 @@ with tab1:
                     st.error(f"Error: {str(e)}")
 
 with tab2:
-    st.write("### Chat con experto CIMA (Perplexity Sonar Pro)")
+    st.write("### Chat con experto CIMA")
     st.markdown("""
     <div class="info-box">
-    Realice consultas sobre medicamentos utilizando tecnología avanzada de IA (Perplexity Sonar Pro).
-    El sistema mostrará su proceso de razonamiento paso a paso y proporcionará referencias específicas.
+    Realice consultas sobre medicamentos.
+    Puede preguntar sobre indicaciones, contraindicaciones, dosis, efectos secundarios, etc.
     </div>
     """, unsafe_allow_html=True)
+    
+    # Example section
+    with st.expander("Ver ejemplos de consultas"):
+        st.markdown("""
+        - ¿Cuáles son los efectos secundarios del ibuprofeno?
+        - ¿Qué dosis de paracetamol es segura para niños?
+        - ¿Qué interacciones tiene la simvastatina con otros medicamentos?
+        - ¿Cuáles son las contraindicaciones del omeprazol?
+        - ¿Es seguro tomar metformina durante el embarazo?
+        - ¿Cuál es la diferencia entre lorazepam y diazepam?
+        """)
     
     # Chat container
     chat_container = st.container()
@@ -431,7 +424,7 @@ with tab2:
                         try:
                             response = run_async(perplexity_client.ask_cima_question_async, prompt)
                         except Exception as async_err:
-                            st.warning(f"Modo asíncrono no disponible: {str(async_err)}", icon="⚠️")
+                            # Fall back to sync method if async fails
                             response = perplexity_client.ask_cima_question(prompt)
                         
                         # Clear the thinking animation
@@ -441,6 +434,13 @@ with tab2:
                         reasoning = response.get("reasoning", "")
                         answer = response.get("answer", "")
                         references = response.get("references", [])
+                        
+                        # Ensure we have a valid answer (fallback to full content if needed)
+                        if not answer and "full_content" in response:
+                            answer = response["full_content"]
+                            # Add a note about parsing issues
+                            if "full_content" in response and response["full_content"]:
+                                answer = "**Nota:** Hubo un problema al estructurar la respuesta, pero aquí está la información:\n\n" + answer
                         
                         # Show reasoning if enabled
                         if st.session_state.show_reasoning and reasoning:
@@ -483,7 +483,6 @@ with tab2:
                     error_message = f"Error: {str(e)}"
                     st.markdown(error_message)
                     st.session_state.messages.append({"role": "assistant", "content": error_message})
-                    raise
                     
     # Button for new conversation
     if st.button("Nueva conversación", key="new_chat"):
