@@ -228,13 +228,18 @@ with tab1:
         )
     
     with col2:
-        st.write("### Ejemplos")
+        st.write("###Ejemplos")
         example_queries = [
-            "Suspensión de Omeprazol 2mg/ml",
-            "Crema de Hidrocortisona al 1%",
-            "Cápsulas de Melatonina 3mg",
-            "Gel de Metronidazol 0.75%",
-            "Solución de Minoxidil 5%"
+                "Suspensión de Ibuprofeno 100mg/ml pediátrico",
+                "Cápsulas de Omeprazol 20mg",
+                "Comprimidos de Simvastatina 20mg",
+                "Solución MINOXIDIL BIORGA 50mg/ml",
+                "Gel de Metronidazol 0.75%",
+                "Crema de Hidrocortisona al 1%",
+                "Comprimidos de Enalapril 10mg",
+                "Suspensión de Amoxicilina 250mg/5ml",
+                "Pomada de Mupirocina 2%",
+                "Comprimidos de Metformina 850mg"
         ]
         
         for example in example_queries:
