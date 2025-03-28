@@ -94,54 +94,6 @@ Para cada sección, incluye referencias específicas a las fuentes CIMA utilizad
 Si hay información insuficiente para alguna sección, indícalo claramente y sugiere fuentes adicionales que podrían consultarse.
 """
 
-    prospecto_prompt = """Experto en redacción de prospectos de medicamentos según normativa AEMPS.
-
-Cuando se solicite redactar un prospecto completo, deberás generar un documento que cumpla con todos los requisitos oficiales de la AEMPS para prospectos de medicamentos, incluyendo:
-
-1. DENOMINACIÓN DEL MEDICAMENTO
-   - Nombre completo con forma farmacéutica y concentración
-
-2. COMPOSICIÓN CUALITATIVA Y CUANTITATIVA
-   - Principios activos y excipientes con declaración obligatoria
-
-3. QUÉ ES Y PARA QUÉ SE UTILIZA
-   - Descripción en lenguaje comprensible para el paciente
-   - Grupo farmacoterapéutico
-   - Indicaciones terapéuticas aprobadas
-
-4. ANTES DE TOMAR EL MEDICAMENTO
-   - Contraindicaciones
-   - Advertencias y precauciones
-   - Interacciones con otros medicamentos
-   - Uso durante embarazo y lactancia
-   - Efectos sobre la capacidad de conducir
-   - Información importante sobre excipientes
-
-5. CÓMO TOMAR EL MEDICAMENTO
-   - Posología detallada para cada indicación
-   - Forma de administración
-   - Duración del tratamiento
-   - Instrucciones en caso de sobredosis o dosis olvidadas
-
-6. POSIBLES EFECTOS ADVERSOS
-   - Clasificados por frecuencia según MedDRA
-   - Agrupados por sistemas orgánicos
-   - Instrucciones al paciente en caso de efectos adversos
-
-7. CONSERVACIÓN
-   - Condiciones específicas de temperatura y humedad
-   - Periodo de validez
-   - Precauciones especiales de conservación
-
-8. INFORMACIÓN ADICIONAL
-   - Titular de la autorización y responsable de fabricación
-   - Fecha de última revisión
-
-Utiliza un lenguaje claro, comprensible para el paciente medio sin conocimientos médicos. Estructura el texto con encabezados numerados. Evita terminología técnica innecesaria pero mantén la precisión científica.
-
-Basa toda la información en los datos proporcionados en el contexto CIMA, citando apropiadamente las fuentes con el formato [Ref X: Nombre del medicamento (Nº Registro)].
-"""
-
     focused_information_prompt = """Experto en información farmacéutica con amplia experiencia en consultas a CIMA.
 
 Has recibido una consulta específica sobre {information_type} de {active_principle}. Proporciona una respuesta directa, clara y detallada centrada específicamente en esta consulta.
@@ -1131,10 +1083,13 @@ Nota: Es posible que este medicamento esté registrado con un nombre ligeramente
         # Extract formulation details for improved prompting
         formulation_info = self.detect_formulation_type(query)
         
-        # Select the appropriate system prompt based on query type
+        # If it's a prospecto request, redirect to the ProspectoGenerator
         if formulation_info["is_prospecto"]:
-            system_prompt = self.prospecto_prompt
-        elif query_intent and query_intent.intent_type != "general":
+            return ("Esta solicitud es para generar un prospecto. Por favor, use la pestaña 'Prospectos' "
+                    "para generar prospectos de medicamentos según la normativa AEMPS.")
+        
+        # Select the appropriate system prompt based on query type
+        if query_intent and query_intent.intent_type != "general":
             # Create a focused prompt for specific information queries
             active_principle = formulation_info.get("active_principle", "el medicamento")
             system_prompt = self.focused_information_prompt.replace(
