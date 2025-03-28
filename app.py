@@ -4,12 +4,12 @@ import openai
 from openai import AsyncOpenAI
 import re
 import os
+from datetime import datetime  # Fixed import
 from dotenv import load_dotenv
 from formulacion import FormulationAgent
 from perplexity_client import PerplexityClient
 from prospecto import ProspectoGenerator  # New import for ProspectoGenerator
 from config import Config
-from datetime import datetime
 
 # Load environment variables (for local development)
 load_dotenv()
@@ -311,6 +311,7 @@ with tab1:
                             progress_bar.progress(100)
                             st.info("Esta consulta parece ser para generar un prospecto. Por favor, utilice la pestaña 'Prospectos' para esta funcionalidad.")
                             # Auto-select the Prospectos tab
+                            st.session_state.current_query = query_fm  # Preserve query for prospectos tab
                             tab3.checkbox("Redireccionar", value=True, key="redirect_to_prospectos")
                         else:
                             # Update progress
@@ -544,6 +545,7 @@ with tab3:
         # Input for prospecto query
         prospecto_query = st.text_area(
             "Solicitud para generar un prospecto:",
+            value=st.session_state.current_query if "use la pestaña 'Prospectos'" in st.session_state.get("redirect_message", "") else "",
             height=100,
             placeholder="Ejemplo: Generar prospecto para Ibuprofeno 600mg"
         )
@@ -584,36 +586,32 @@ with tab3:
                     status_text.text("Buscando información en CIMA...")
                     progress_bar.progress(30)
                     
-                    # Check if prospecto generator is available
-                    if not prospecto_generator:
-                        st.error("No se puede conectar con OpenAI. Verifique su API key.")
-                    else:
-                        # Generate prospecto
-                        response = run_async(prospecto_generator.generate_prospecto, prospecto_query)
-                        
-                        # Update progress
-                        status_text.text("Finalizando prospecto...")
-                        progress_bar.progress(80)
-                        
-                        # Add to history
-                        st.session_state.prospecto_history.append({
-                            "query": prospecto_query,
-                            "prospecto": response["prospecto"],
-                            "context": response["context"],
-                            "medication": response["medication"]
-                        })
-                        
-                        # Complete progress
-                        progress_bar.progress(100)
-                        status_text.empty()
-                        progress_placeholder.empty()
-                        
-                        # Display the prospecto
-                        st.subheader(f"Prospecto para: {response['medication']}")
-                        st.markdown(response["prospecto"])
-                        
-                        # Option to download
-                        prospecto_text = f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO
+                    # Generate prospecto
+                    response = run_async(prospecto_generator.generate_prospecto, prospecto_query)
+                    
+                    # Update progress
+                    status_text.text("Finalizando prospecto...")
+                    progress_bar.progress(80)
+                    
+                    # Add to history
+                    st.session_state.prospecto_history.append({
+                        "query": prospecto_query,
+                        "prospecto": response["prospecto"],
+                        "context": response["context"],
+                        "medication": response["medication"]
+                    })
+                    
+                    # Complete progress
+                    progress_bar.progress(100)
+                    status_text.empty()
+                    progress_placeholder.empty()
+                    
+                    # Display the prospecto
+                    st.subheader(f"Prospecto para: {response['medication']}")
+                    st.markdown(response["prospecto"])
+                    
+                    # Option to download
+                    prospecto_text = f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO
 
 {response["prospecto"]}
 
@@ -621,19 +619,16 @@ with tab3:
 Generado para: {response["medication"]}
 Fecha de generación: {datetime.now().strftime("%d/%m/%Y")}
 """
-                        st.download_button(
-                            label="Descargar prospecto",
-                            data=prospecto_text,
-                            file_name=f"prospecto_{response['medication'].replace(' ', '_')[:30]}.md",
-                            mime="text/markdown"
-                        )
-                        
-                        # Show context in expandable section
-                        with st.expander("Ver datos utilizados de CIMA"):
-                            st.markdown(response["context"])
-                            
-                        # Clean up resources
-                        run_async(prospecto_generator.close)
+                    st.download_button(
+                        label="Descargar prospecto",
+                        data=prospecto_text,
+                        file_name=f"prospecto_{response['medication'].replace(' ', '_')[:30]}.md",
+                        mime="text/markdown"
+                    )
+                    
+                    # Show context in expandable section
+                    with st.expander("Ver datos utilizados de CIMA"):
+                        st.markdown(response["context"])
                 
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
