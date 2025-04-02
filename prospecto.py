@@ -1,5 +1,6 @@
 """
-Prospecto generator module for creating medication package inserts following AEMPS standards.
+Prospecto generator module for creating medication package inserts (prospectos)
+following official AEMPS guidelines for patient information leaflets.
 """
 
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from datetime import datetime
 import logging
 import tiktoken
 from search_graph import MedicationSearchGraph, QueryIntent
+import html
 from bs4 import BeautifulSoup
 
 # Configure logging
@@ -23,8 +25,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ProspectoGenerator:
     """
-    Generator for medication package inserts (prospectos) using CIMA data.
-    Generates patient-friendly prospectos following official AEMPS standards.
+    Generator for medication package inserts (prospectos) using CIMA data,
+    following the official AEMPS guidelines for patient information leaflets.
     """
     openai_client: AsyncOpenAI
     reference_cache: Dict[str, List[Dict]] = field(default_factory=dict)
@@ -33,62 +35,67 @@ class ProspectoGenerator:
     use_langgraph: bool = True  # Use the LangGraph search by default
     base_url: str = Config.CIMA_BASE_URL
     
-    # Revised system prompt focusing on proper AEMPS prospecto standards for patients
+    # System prompt specifically for prospecto generation matching AEMPS standards
     system_prompt = """Eres un experto en redacción de prospectos de medicamentos siguiendo estrictamente el formato oficial de la AEMPS española (Agencia Española de Medicamentos y Productos Sanitarios).
 
-IMPORTANTE: El prospecto es un documento dirigido a PACIENTES que acompaña a los medicamentos y explica, en lenguaje sencillo y accesible, toda la información necesaria para el uso correcto del medicamento. NO es una ficha técnica para profesionales ni una formulación magistral.
+IMPORTANTE: Un prospecto NO es lo mismo que una formulación magistral ni una ficha técnica. Un prospecto es un documento dirigido a PACIENTES que acompaña a los medicamentos y explica, en lenguaje sencillo y accesible, toda la información necesaria para el uso correcto del medicamento.
 
-Tu tarea es generar un prospecto que siga exactamente el formato oficial de la AEMPS, con estas características esenciales:
-- Lenguaje claro y sencillo, dirigido a pacientes sin conocimientos médicos
-- Formato de preguntas y respuestas donde sea apropiado
-- Estructura estandarizada siguiendo las secciones oficiales
-- Advertencias claramente resaltadas
-- Instrucciones claras de dosificación y administración
+Tu tarea es generar un prospecto que siga exactamente la estructura y formato oficial de la AEMPS, utilizando un tono cercano y comprensible para pacientes, evitando tecnicismos innecesarios y explicando los términos médicos cuando sea imprescindible.
 
 ESTRUCTURA OFICIAL DEL PROSPECTO SEGÚN AEMPS:
 
 1. NOMBRE DEL MEDICAMENTO
-   [Nombre comercial, formulación y concentración]
+   [Nombre completo con forma farmacéutica y concentración]
 
 2. QUÉ ES [MEDICAMENTO] Y PARA QUÉ SE UTILIZA
-   - Descripción simple del grupo terapéutico
-   - Indicaciones terapéuticas en lenguaje comprensible
+   [Descripción sencilla del grupo terapéutico y para qué condiciones se usa]
 
 3. ANTES DE TOMAR [MEDICAMENTO]
-   - No tome [MEDICAMENTO] si... (contraindications)
+   - No tome [MEDICAMENTO]... [Contraindications]
    - Advertencias y precauciones
    - Uso de otros medicamentos
    - Toma de [MEDICAMENTO] con alimentos y bebidas
    - Embarazo y lactancia
    - Conducción y uso de máquinas
-   - Información sobre excipientes
+   - Información importante sobre algunos de los componentes de [MEDICAMENTO]
 
 4. CÓMO TOMAR [MEDICAMENTO]
-   - Posología detallada en lenguaje sencillo
+   - Instrucciones claras sobre dosis
    - Forma de administración
    - Duración del tratamiento
-   - Si toma más [MEDICAMENTO] del que debe
+   - Si toma más [MEDICAMENTO] del que debiera
    - Si olvidó tomar [MEDICAMENTO]
    - Si interrumpe el tratamiento con [MEDICAMENTO]
 
 5. POSIBLES EFECTOS ADVERSOS
-   - Clasificados por frecuencia
-   - Explicados en términos comprensibles
-   - Instrucciones sobre cuándo consultar al médico
+   - Clasificados por frecuencia (muy frecuentes, frecuentes, poco frecuentes, raros, muy raros)
+   - Instrucciones sobre qué hacer si aparecen efectos adversos
 
 6. CONSERVACIÓN DE [MEDICAMENTO]
    - Condiciones de conservación
-   - Mantener fuera del alcance de los niños
-   - Fecha de caducidad
+   - Caducidad y qué hacer al respecto
+   - Información sobre eliminación
 
 7. INFORMACIÓN ADICIONAL
-   - Composición
-   - Aspecto y contenido del envase
-   - Titular de la autorización y responsable de fabricación
+   - Composición (principio activo y excipientes)
+   - Aspecto del producto y contenido del envase
+   - Titular de la autorización de comercialización y responsable de la fabricación
 
-Utiliza EXACTAMENTE esta estructura y estas secciones, utilizando el contenido del prospecto oficial proporcionado en los datos de CIMA. Si alguna sección no tiene información disponible, indícalo claramente.
+Debes basar el prospecto en la información proporcionada en el contexto, priorizando el contenido del prospecto original siempre que esté disponible. Mantén un lenguaje accesible y amigable para el paciente, utilizando frases cortas y directas.
 
-Evita utilizar términos técnicos innecesarios. Cuando sea imprescindible usar un término médico complejo, explícalo brevemente de forma comprensible.
+Utiliza con frecuencia estructuras como:
+- Listas con viñetas para mayor claridad
+- Frases cortas y directas
+- Preguntas directas como encabezados
+- Instrucciones específicas utilizando verbos imperativos
+
+Evita:
+- Términos médicos complejos sin explicación
+- Oraciones subordinadas extensas 
+- Información excesivamente técnica
+- Referencias a estudios clínicos complejos
+
+Sigue fielmente la estructura AEMPS indicada, manteniendo los apartados numerados y en el orden correcto.
 """
 
     def __init__(self, openai_client: AsyncOpenAI):
@@ -155,19 +162,20 @@ Evita utilizar términos técnicos innecesarios. Cuando sea imprescindible usar 
         """
         query_lower = query.lower()
         
-        # Enhanced prospecto request detection pattern
-        prospecto_pattern = r'(?:redactar|generar|crear|elaborar|realizar?e?|escrib[ei]r|hac[ae]r|desarroll[ae]r|realiza(?:r|)|prepar(?:ar|a)|necesito|quiero)\s+(?:un|el|uns?|una?|)?(?:\s+|\s*)\b(?:prospecto|folleto|información para el paciente|leaflet|insert|pil)\b'
+        # Expanded prospecto request detection pattern
+        prospecto_pattern = r'(?:redactar|generar|crear|elaborar|realizar?e?|escrib[ei]r|hac[ae]r|desarroll[ae]r|realiza(?:r|)|prepar(?:ar|a))\s+(?:un|el|uns?|una?)?\s+prospecto'
         is_prospecto = bool(re.search(prospecto_pattern, query_lower))
         
-        # Check if this mentions "prospecto" and related terms
-        prospecto_terms = ["prospecto", "folleto", "información para paciente", "indicaciones", "leaflet"]
-        if not is_prospecto and any(term in query_lower for term in prospecto_terms):
+        # Check if this explicitly mentions "prospecto" 
+        if not is_prospecto and "prospecto" in query_lower:
             is_prospecto = True
             
-        # Extract active principle
+        # Extract active principle with improved pattern matching
         active_principle = None
+        # Try direct matching first
         for ap in self.active_principles:
-            if ap in query_lower:
+            # Use word boundary to avoid partial matches
+            if re.search(r'\b' + re.escape(ap) + r'\b', query_lower):
                 active_principle = ap
                 break
         
@@ -185,14 +193,14 @@ Evita utilizar términos técnicos innecesarios. Cuando sea imprescindible usar 
                     active_principle = cap_words[0]
                 else:
                     # Just take the longest word as a guess
-                    words = [w for w in query_lower.split() if len(w) > 4 and not any(x in w for x in ['como', 'para', 'sobre', 'cual', 'este', 'esta', 'prospecto', 'generar', 'crear'])]
+                    words = [w for w in query_lower.split() if len(w) > 4 and not any(x in w for x in ['como', 'para', 'sobre', 'cual', 'este', 'esta', 'prospecto'])]
                     if words:
                         active_principle = max(words, key=len)
         
         # Check for medication names like "MINOXIDIL BIORGA"
         uppercase_names = re.findall(r'\b[A-Z]{2,}\s+[A-Z]{2,}\b', query.upper())
         
-        # Extract concentration if present
+        # Extract concentration with improved pattern matching
         concentration_pattern = r'(\d+(?:[,.]\d+)?\s*(?:%|mg|g|ml|mcg|UI|unidades)|\d+\s*(?:mg)?[/](?:ml|g))'
         concentration_match = re.search(concentration_pattern, query)
         concentration = concentration_match.group(0) if concentration_match else None
@@ -204,58 +212,10 @@ Evita utilizar términos técnicos innecesarios. Cuando sea imprescindible usar 
             "concentration": concentration
         }
 
-    def clean_html(self, html_content: str) -> str:
-        """
-        Clean HTML content to get plain text, preserving basic structure.
-        
-        Args:
-            html_content: HTML content to clean
-            
-        Returns:
-            Cleaned text
-        """
-        if not html_content or html_content == "No disponible":
-            return "No disponible"
-            
-        try:
-            # Use BeautifulSoup to clean the HTML if available
-            try:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(html_content, "html.parser")
-                # Convert <br> and <p> to newlines
-                for br in soup.find_all("br"):
-                    br.replace_with("\n")
-                for p in soup.find_all("p"):
-                    p.append("\n\n")
-                # Convert headings to capitalized text with newlines
-                for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                    heading_text = heading.get_text().strip().upper()
-                    heading.replace_with(f"\n\n{heading_text}\n\n")
-                # Convert lists to bullet points
-                for ul in soup.find_all("ul"):
-                    for li in ul.find_all("li"):
-                        li_text = li.get_text().strip()
-                        li.replace_with(f"• {li_text}\n")
-                # Get the cleaned text
-                return soup.get_text().replace("\n\n\n\n", "\n\n").replace("\n\n\n", "\n\n").strip()
-            except ImportError:
-                # Fallback to regex if BeautifulSoup is not available
-                text = re.sub(r'<br\s*/?>', '\n', html_content)
-                text = re.sub(r'<p\b[^>]*>(.*?)</p>', r'\1\n\n', text)
-                text = re.sub(r'<h[1-6][^>]*>(.*?)</h[1-6]>', r'\n\n\1\n\n', text)
-                text = re.sub(r'<li\b[^>]*>(.*?)</li>', r'• \1\n', text)
-                text = re.sub(r'<[^>]+>', ' ', text)
-                text = re.sub(r'\s+', ' ', text)
-                return text.strip()
-        except Exception as e:
-            logger.error(f"Error cleaning HTML: {str(e)}")
-            # Simple fallback
-            return re.sub(r'<[^>]+>', ' ', html_content).strip()
-
     async def get_medication_context(self, query: str) -> str:
         """
-        Gets medication context for prospecto generation using CIMA data.
-        Prioritizes the official prospecto content from the API.
+        Gets medication context for prospecto generation using CIMA data,
+        prioritizing the actual prospecto content.
         
         Args:
             query: Query about medication prospecto
@@ -270,9 +230,9 @@ Evita utilizar términos técnicos innecesarios. Cuando sea imprescindible usar 
         if not results:
             return "No se encontraron medicamentos relevantes para esta consulta."
         
-        # Get the most relevant medication with proper error handling
+        # Get the most relevant medication - with proper type checking
         try:
-            # Check if the first result is a dictionary
+            # Check if the first result is a dictionary (as it should be)
             top_med = results[0]
             if not isinstance(top_med, dict):
                 logger.error(f"Unexpected result type: {type(top_med)}")
@@ -284,7 +244,7 @@ Evita utilizar términos técnicos innecesarios. Cuando sea imprescindible usar 
                 logger.error("No nregistro found in top result")
                 return "No se pudo encontrar el número de registro del medicamento."
             
-            # Get medication details
+            # Get basic medication details
             session = await self.get_session()
             url = f"{self.base_url}/medicamento"
             
@@ -294,106 +254,21 @@ Evita utilizar términos técnicos innecesarios. Cuando sea imprescindible usar 
                     
                 basic_info = await response.json()
             
-            # ENHANCED: Try multiple sources to get the best prospecto content
-            prospecto_content = "No disponible"
-            prospecto_sources = [
-                # Official API endpoint for segmented prospecto
-                (f"{self.base_url}/docSegmentado/contenido/2", {"nregistro": nregistro}),
-                # Alternative direct HTML sources
-                (f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html", None),
-                (f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/Prospecto_{nregistro}.html", None)
-            ]
+            # ENHANCED: Get the full prospecto content directly - this is critical
+            # Use multiple methods to ensure we get the prospecto data
+            prospecto_content = await self._get_full_prospecto(nregistro)
             
-            # Try each source until we get valid content
-            for source_url, params in prospecto_sources:
-                try:
-                    if params:
-                        async with session.get(source_url, params=params) as response:
-                            if response.status == 200:
-                                try:
-                                    data = await response.json()
-                                    if isinstance(data, dict) and "contenido" in data:
-                                        prospecto_content = data["contenido"]
-                                        # If we got content, clean and break
-                                        if prospecto_content and prospecto_content != "No disponible":
-                                            logger.info(f"Got prospecto content from {source_url} with params")
-                                            prospecto_content = self.clean_html(prospecto_content)
-                                            break
-                                except:
-                                    # If not JSON, try as HTML
-                                    raw_content = await response.text()
-                                    if len(raw_content) > 100:  # Basic validation
-                                        prospecto_content = self.clean_html(raw_content)
-                                        logger.info(f"Got prospecto content from {source_url} with params as HTML")
-                                        break
-                    else:
-                        # Direct URL without params
-                        async with session.get(source_url) as response:
-                            if response.status == 200:
-                                raw_content = await response.text()
-                                if len(raw_content) > 100:  # Basic validation
-                                    prospecto_content = self.clean_html(raw_content)
-                                    logger.info(f"Got prospecto content from {source_url} direct")
-                                    break
-                except Exception as e:
-                    logger.warning(f"Error accessing {source_url}: {str(e)}")
-                    continue
-            
-            # Get structured information for better prospecto generation
-            structured_sections = {}
-            try:
-                # Try to get structured sections if available
-                sections_to_fetch = {
-                    "indicaciones": "4.1",
-                    "posologia": "4.2",
-                    "contraindicaciones": "4.3",
-                    "advertencias": "4.4",
-                    "interacciones": "4.5",
-                    "embarazo": "4.6",
-                    "efectos_adversos": "4.8",
-                    "excipientes": "6.1"
-                }
-                
-                for section_key, section_id in sections_to_fetch.items():
-                    api_section_id = section_id.replace(".", "")
-                    tech_url = f"{self.base_url}/docSegmentado/contenido/1"
-                    params = {"nregistro": nregistro, "seccion": api_section_id}
-                    
-                    try:
-                        async with session.get(tech_url, params=params) as response:
-                            if response.status == 200:
-                                section_data = await response.json()
-                                if "contenido" in section_data:
-                                    content = section_data["contenido"]
-                                    if content and content != "No disponible":
-                                        structured_sections[section_key] = self.clean_html(content)
-                    except Exception as e:
-                        logger.warning(f"Error fetching section {section_key}: {str(e)}")
-            except Exception as e:
-                logger.warning(f"Error fetching structured sections: {str(e)}")
-            
-            # Format the context with emphasis on prospecto structure
+            # Format the context with a clear PROSPECTO section
             context = f"""
-INFORMACIÓN DEL MEDICAMENTO:
+INFORMACIÓN BÁSICA DEL MEDICAMENTO:
 - Nombre: {basic_info.get('nombre', 'No disponible')}
 - Número de registro: {nregistro}
 - Principio(s) activo(s): {basic_info.get('pactivos', 'No disponible')}
 - Laboratorio titular: {basic_info.get('labtitular', 'No disponible')}
 
-=== PROSPECTO OFICIAL DEL MEDICAMENTO ===
+CONTENIDO DEL PROSPECTO OFICIAL:
 {prospecto_content}
 
-"""
-            
-            # Add structured sections if available and prospecto is not detailed enough
-            if structured_sections and (prospecto_content == "No disponible" or len(prospecto_content) < 500):
-                context += "\n=== INFORMACIÓN ADICIONAL ESTRUCTURADA (PARA COMPLETAR EL PROSPECTO) ===\n"
-                for section_key, content in structured_sections.items():
-                    section_name = section_key.upper().replace("_", " ")
-                    context += f"\n{section_name}:\n{content}\n"
-            
-            # Add document links
-            context += f"""
 URL FICHA TÉCNICA:
 https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
 
@@ -406,10 +281,175 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
             logger.error(f"Error getting medication context: {str(e)}")
             return f"Error al obtener información del medicamento: {str(e)}"
 
+    async def _get_full_prospecto(self, nregistro: str) -> str:
+        """
+        Enhanced method to get the full prospecto content using multiple approaches
+        to ensure we get the best possible data.
+        
+        Args:
+            nregistro: Registration number
+            
+        Returns:
+            Formatted prospecto content
+        """
+        session = await self.get_session()
+        prospecto_content = "No disponible"
+        
+        # Try multiple methods to get the prospecto
+        methods = [
+            self._get_prospecto_from_api,
+            self._get_prospecto_from_html,
+            self._get_prospecto_from_pdf_url
+        ]
+        
+        for method in methods:
+            try:
+                result = await method(nregistro, session)
+                if result and result != "No disponible" and len(result) > 100:
+                    # Clean up the content - remove excessive whitespace and HTML
+                    cleaned_content = self._clean_prospecto_content(result)
+                    if cleaned_content and len(cleaned_content) > 100:
+                        logger.info(f"Successfully retrieved prospecto with method {method.__name__}")
+                        return cleaned_content
+            except Exception as e:
+                logger.warning(f"Error retrieving prospecto with method {method.__name__}: {str(e)}")
+        
+        # If all methods failed, return fallback message
+        return "El prospecto oficial no está disponible. Se generará un prospecto basado en la información general del medicamento."
+
+    async def _get_prospecto_from_api(self, nregistro: str, session: aiohttp.ClientSession) -> str:
+        """Get prospecto from CIMA API endpoint"""
+        prospecto_url = f"{self.base_url}/docSegmentado/contenido/2"
+        
+        async with session.get(prospecto_url, params={"nregistro": nregistro}) as response:
+            if response.status != 200:
+                return "No disponible"
+                
+            try:
+                prospecto_data = await response.json()
+                content = prospecto_data.get("contenido", "No disponible")
+                if content and content != "No disponible":
+                    return content
+                return "No disponible"
+            except:
+                return "No disponible"
+
+    async def _get_prospecto_from_html(self, nregistro: str, session: aiohttp.ClientSession) -> str:
+        """Get prospecto from HTML document URL"""
+        prospecto_urls = [
+            f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html",
+            f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/Prospecto_{nregistro}.html"
+        ]
+        
+        for url in prospecto_urls:
+            try:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        html_content = await response.text()
+                        
+                        # Use BeautifulSoup to extract the text
+                        try:
+                            from bs4 import BeautifulSoup
+                            soup = BeautifulSoup(html_content, 'html.parser')
+                            
+                            # Remove scripts, styles and other unwanted elements
+                            for element in soup(["script", "style", "nav", "footer", "header"]):
+                                element.decompose()
+                                
+                            # Get the main content
+                            main_content = soup.find("div", {"class": ["page", "content", "main-content"]})
+                            if main_content:
+                                text = main_content.get_text(separator="\n")
+                            else:
+                                text = soup.get_text(separator="\n")
+                                
+                            # Clean up the text
+                            lines = [line.strip() for line in text.splitlines() if line.strip()]
+                            text = "\n".join(lines)
+                            
+                            return text
+                        except:
+                            # If BeautifulSoup fails, just return basic HTML
+                            return html_content
+            except:
+                continue
+                
+        return "No disponible"
+
+    async def _get_prospecto_from_pdf_url(self, nregistro: str, session: aiohttp.ClientSession) -> str:
+        """
+        Get prospecto from PDF URL
+        Note: This doesn't download/parse the PDF, it just returns the URL
+        for reference purposes
+        """
+        pdf_url = f"https://cima.aemps.es/cima/pdfs/p/{nregistro}/P_{nregistro}.pdf"
+        
+        try:
+            async with session.head(pdf_url) as response:
+                if response.status == 200:
+                    return f"Prospecto disponible en PDF: {pdf_url}"
+        except:
+            pass
+            
+        return "No disponible"
+
+    def _clean_prospecto_content(self, content: str) -> str:
+        """
+        Clean up prospecto content by removing HTML tags and excess whitespace
+        
+        Args:
+            content: Raw prospecto content
+            
+        Returns:
+            Cleaned prospecto content
+        """
+        # First try to clean with BeautifulSoup if it's HTML content
+        if "<html" in content.lower() or "<body" in content.lower() or "<div" in content.lower():
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(content, 'html.parser')
+                
+                # Remove unwanted elements
+                for element in soup(["script", "style"]):
+                    element.decompose()
+                
+                # Get text with line breaks
+                text = soup.get_text(separator="\n")
+                
+                # Clean up whitespace
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
+                text = "\n".join(lines)
+                
+                return text
+            except Exception as e:
+                logger.warning(f"Error cleaning HTML content: {str(e)}")
+        
+        # Fallback to basic cleaning if BeautifulSoup fails or content isn't HTML
+        # Strip HTML tags
+        text = re.sub(r'<[^>]+>', ' ', content)
+        
+        # Decode HTML entities
+        try:
+            text = html.unescape(text)
+        except:
+            pass
+        
+        # Remove excess whitespace
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Restore line breaks for key sections to maintain structure
+        for section in ["NOMBRE DEL MEDICAMENTO", "QUÉ ES", "ANTES DE", "CÓMO TOMAR", 
+                       "POSIBLES EFECTOS", "CONSERVACIÓN", "INFORMACIÓN ADICIONAL",
+                       "1.", "2.", "3.", "4.", "5.", "6.", "7."]:
+            text = text.replace(section, f"\n\n{section}")
+        
+        # Final cleanup
+        return text.strip()
+
     async def generate_prospecto(self, query: str) -> Dict[str, str]:
         """
-        Generate a complete medication prospecto based on CIMA data.
-        The output follows official AEMPS patient information leaflet standards.
+        Generate a complete medication prospecto based on CIMA data,
+        following official AEMPS guidelines for patient information leaflets.
         
         Args:
             query: Query about medication prospecto
@@ -427,7 +467,7 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                 "medication": ""
             }
         
-        # Get context for the medication
+        # Get context for the medication - enhanced to prioritize prospecto content
         context = await self.get_medication_context(query)
         
         if "Error" in context or "No se encontraron" in context:
@@ -439,24 +479,26 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
         
         # Create a prompt for generating the prospecto
         prompt = f"""
-Genera un prospecto de medicamento en formato AEMPS oficial para pacientes a partir de la siguiente información:
+Por favor, genera un PROSPECTO DE MEDICAMENTO siguiendo estrictamente el formato oficial AEMPS.
+El prospecto debe estar dirigido a PACIENTES (no a profesionales sanitarios) en lenguaje claro y accesible.
+
+INFORMACIÓN DEL MEDICAMENTO Y CONTENIDO DEL PROSPECTO ORIGINAL:
+{context}
 
 CONSULTA DEL USUARIO:
 {query}
 
-CONTEXTO DEL MEDICAMENTO:
-{context}
+Basándote en esta información, genera un prospecto completo que siga la estructura oficial AEMPS:
 
-INSTRUCCIONES ESPECÍFICAS:
-1. Utiliza EXCLUSIVAMENTE la estructura de un prospecto de AEMPS oficial (para pacientes)
-2. Mantén un lenguaje sencillo y comprensible para cualquier paciente
-3. Usa formato de preguntas y respuestas donde sea apropiado (ej: "¿Qué es X y para qué se utiliza?")
-4. Respeta el formato de secciones numeradas según las directrices oficiales
-5. Utiliza viñetas (•) para listar elementos cuando sea apropiado
-6. IMPORTANTE: No inventes información; si no hay datos para alguna sección, indícalo claramente
-7. Prioriza siempre la información del prospecto oficial que está en el contexto
+1. NOMBRE DEL MEDICAMENTO
+2. QUÉ ES [MEDICAMENTO] Y PARA QUÉ SE UTILIZA
+3. ANTES DE TOMAR [MEDICAMENTO]
+4. CÓMO TOMAR [MEDICAMENTO]
+5. POSIBLES EFECTOS ADVERSOS
+6. CONSERVACIÓN DE [MEDICAMENTO]
+7. INFORMACIÓN ADICIONAL
 
-RECUERDA: Un prospecto es un documento informativo para PACIENTES, no para profesionales sanitarios.
+Utiliza un lenguaje claro, sencillo y directo. Evita tecnicismos innecesarios y explica los términos médicos cuando sean imprescindibles. Utiliza frases cortas y directas con formato de lista cuando sea apropiado para facilitar la comprensión.
 """
 
         try:
@@ -467,7 +509,7 @@ RECUERDA: Un prospecto es un documento informativo para PACIENTES, no para profe
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.4  # Lower temperature for more adherence to the format
+                temperature=0.7
             )
             
             prospecto = response.choices[0].message.content
