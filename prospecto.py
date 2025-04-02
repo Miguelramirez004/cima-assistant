@@ -209,15 +209,21 @@ Basa toda la información en los datos proporcionados en el contexto CIMA, citan
         if not results:
             return "No se encontraron medicamentos relevantes para esta consulta."
         
-        # Get the most relevant medication
-        top_med = results[0]
-        nregistro = top_med.get("nregistro")
-        
-        if not nregistro:
-            return "No se pudo encontrar el número de registro del medicamento."
-        
-        # Get medication details
+        # Get the most relevant medication - FIX by properly checking the type of results
         try:
+            # Check if the first result is a dictionary (as it should be)
+            top_med = results[0]
+            if not isinstance(top_med, dict):
+                logger.error(f"Unexpected result type: {type(top_med)}")
+                return "Error: Resultado en formato inesperado."
+            
+            # Now safely extract the nregistro
+            nregistro = top_med.get("nregistro")
+            if not nregistro:
+                logger.error("No nregistro found in top result")
+                return "No se pudo encontrar el número de registro del medicamento."
+            
+            # Get medication details
             session = await self.get_session()
             url = f"{self.base_url}/medicamento"
             
@@ -255,6 +261,7 @@ URL PROSPECTO:
 https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
 """
             return context
+            
         except Exception as e:
             logger.error(f"Error getting medication context: {str(e)}")
             return f"Error al obtener información del medicamento: {str(e)}"
