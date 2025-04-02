@@ -13,6 +13,7 @@ from formulacion import FormulationAgent
 from config import Config
 from openai_client import create_async_openai_client
 from perplexity_client import PerplexityClient
+from prospecto import ProspectoGenerator  # Add import for ProspectoGenerator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -83,6 +84,9 @@ def init_resources():
     # Initialize Perplexity client for CIMA consultations
     perplexity_client = PerplexityClient(api_key=Config.PERPLEXITY_API_KEY)
     
+    # Initialize prospecto generator
+    prospecto_generator = ProspectoGenerator(openai_client)
+    
     # Register cleanup handler for Streamlit session end
     def cleanup_resources():
         """Properly clean up resources when the Streamlit session ends"""
@@ -91,8 +95,16 @@ def init_resources():
             cleanup_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(cleanup_loop)
             
-            # Only close the formulation agent (Perplexity client doesn't need closing)
-            cleanup_loop.run_until_complete(formulation_agent.close())
+            # Close agents that have session resources
+            try:
+                cleanup_loop.run_until_complete(asyncio.gather(
+                    formulation_agent.close(),
+                    prospecto_generator.close(),
+                    return_exceptions=True
+                ))
+            except Exception as e:
+                logger.error(f"Error closing agents: {str(e)}")
+                
             cleanup_loop.close()
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}")
@@ -101,7 +113,7 @@ def init_resources():
     import atexit
     atexit.register(cleanup_resources)
     
-    return formulation_agent, perplexity_client
+    return formulation_agent, perplexity_client, prospecto_generator
 
 # Custom CSS with just the essential styling
 st.markdown("""
@@ -199,6 +211,7 @@ if 'resources' not in st.session_state:
     st.session_state.resources = init_resources()
     st.session_state.chat_history = []
     st.session_state.formulation_history = []
+    st.session_state.prospecto_history = []  # Add prospecto history
     st.session_state.search_history = set()
     st.session_state.messages = []
     st.session_state.current_query = ""
@@ -218,6 +231,7 @@ with st.sidebar:
     
     - Formulaciones magistrales detalladas
     - Consultas sobre medicamentos con IA avanzada
+    - Prospectos de medicamentos
     - Referencias a información oficial
     """)
     
@@ -258,6 +272,7 @@ with st.sidebar:
         # Reset state
         st.session_state.search_history = set()
         st.session_state.formulation_history = []
+        st.session_state.prospecto_history = []  # Clear prospecto history
         if st.session_state.resources and st.session_state.resources[1]:
             # Clear Perplexity client history
             st.session_state.resources[1].clear_history()
@@ -342,8 +357,8 @@ with st.sidebar:
         status.empty()
         st.info("Diagnóstico completo")
 
-# Main tabs
-tab1, tab2, tab3 = st.tabs(["Formulación Magistral", "Consultas CIMA", "Historial"])
+# Main tabs - Updated to include Prospectos tab
+tab1, tab2, tab3, tab4 = st.tabs(["Formulación Magistral", "Consultas CIMA", "Prospectos", "Historial"])
 
 with tab1:
     col1, col2 = st.columns([3, 1])
@@ -654,18 +669,148 @@ with tab2:
             st.session_state.resources[1].clear_history()
         st.rerun()
 
+# Add new Prospectos tab implementation
 with tab3:
-    st.header("Historial de formulaciones")
+    st.write("### Generador de Prospectos de Medicamentos")
+    st.markdown("""
+    <div class="info-box">
+    Genere prospectos completos para medicamentos según la normativa de la AEMPS.
+    Especifique el nombre del medicamento o principio activo para obtener mejores resultados.
+    </div>
+    """, unsafe_allow_html=True)
     
-    if not st.session_state.formulation_history:
-        st.info("No hay formulaciones en el historial")
-    else:
-        for i, item in enumerate(st.session_state.formulation_history):
-            with st.expander(f"Formulación: {item['query']}"):
-                st.markdown(item["response"])
-                st.download_button(
-                    label="Descargar",
-                    data=f"""# Formulación Magistral\n\n## Consulta\n{item['query']}\n\n## Formulación\n{item["response"]}\n\n## Referencias\n{item["context"]}""",
-                    file_name=f"formulacion_{i}.md",
-                    mime="text/markdown"
-                )
+    # Create columns for input and examples
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        # Input for prospecto query
+        prospecto_query = st.text_area(
+            "Solicitud para generar un prospecto:",
+            value="",
+            height=100,
+            placeholder="Ejemplo: Generar prospecto para Ibuprofeno 600mg"
+        )
+    
+    with col2:
+        st.write("### Ejemplos")
+        example_queries = [
+            "Generar prospecto para Ibuprofeno 600mg",
+            "Prospecto de Omeprazol 20mg",
+            "Crear prospecto para Amoxicilina 500mg",
+            "Prospecto para MINOXIDIL BIORGA"
+        ]
+        
+        for example in example_queries:
+            if st.button(example, key=f"prospecto_{example}"):
+                # Set the example as the current query
+                prospecto_query = example
+                st.rerun()
+    
+    # Generate button
+    if st.button("Generar Prospecto", type="primary", key="generate_prospecto"):
+        if not prospecto_query:
+            st.warning("Por favor ingrese una consulta")
+        else:
+            # Add to search history
+            st.session_state.search_history.add(prospecto_query)
+            
+            # Progress indicators
+            progress_placeholder = st.empty()
+            status_text = st.empty()
+            
+            with st.spinner("Generando prospecto..."):
+                try:
+                    # Show progress updates
+                    with progress_placeholder.container():
+                        progress_bar = st.progress(0)
+                    
+                    status_text.text("Buscando información en CIMA...")
+                    progress_bar.progress(30)
+                    
+                    # Get prospecto generator from resources
+                    prospecto_generator = st.session_state.resources[2]  # Third element in the tuple
+                    
+                    # Generate prospecto
+                    response = run_async(prospecto_generator.generate_prospecto, prospecto_query)
+                    
+                    # Update progress
+                    status_text.text("Finalizando prospecto...")
+                    progress_bar.progress(80)
+                    
+                    # Add to history
+                    st.session_state.prospecto_history.append({
+                        "query": prospecto_query,
+                        "prospecto": response["prospecto"],
+                        "context": response["context"],
+                        "medication": response["medication"]
+                    })
+                    
+                    # Complete progress
+                    progress_bar.progress(100)
+                    status_text.empty()
+                    progress_placeholder.empty()
+                    
+                    # Display the prospecto
+                    st.subheader(f"Prospecto para: {response['medication']}")
+                    st.markdown(response["prospecto"])
+                    
+                    # Option to download
+                    prospecto_text = f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO
+
+{response["prospecto"]}
+
+---
+Generado para: {response["medication"]}
+Fecha de generación: {datetime.now().strftime("%d/%m/%Y")}
+"""
+                    st.download_button(
+                        label="Descargar prospecto",
+                        data=prospecto_text,
+                        file_name=f"prospecto_{response['medication'].replace(' ', '_')[:30]}.md",
+                        mime="text/markdown"
+                    )
+                    
+                    # Show context in expandable section
+                    with st.expander("Ver datos utilizados de CIMA"):
+                        st.markdown(response["context"])
+                
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+                    logger.error(f"Error generating prospecto: {str(e)}")
+
+# Update the Historial tab with subtabs
+with tab4:
+    # Create subtabs for different history types
+    hist_tab1, hist_tab2 = st.tabs(["Formulaciones", "Prospectos"])
+    
+    with hist_tab1:
+        st.header("Historial de formulaciones")
+        
+        if not st.session_state.formulation_history:
+            st.info("No hay formulaciones en el historial")
+        else:
+            for i, item in enumerate(st.session_state.formulation_history):
+                with st.expander(f"Formulación: {item['query']}"):
+                    st.markdown(item["response"])
+                    st.download_button(
+                        label="Descargar",
+                        data=f"""# Formulación Magistral\n\n## Consulta\n{item['query']}\n\n## Formulación\n{item["response"]}\n\n## Referencias\n{item["context"]}""",
+                        file_name=f"formulacion_{i}.md",
+                        mime="text/markdown"
+                    )
+    
+    with hist_tab2:
+        st.header("Historial de prospectos")
+        
+        if not st.session_state.prospecto_history:
+            st.info("No hay prospectos en el historial")
+        else:
+            for i, item in enumerate(st.session_state.prospecto_history):
+                with st.expander(f"Prospecto: {item['medication']}"):
+                    st.markdown(item["prospecto"])
+                    st.download_button(
+                        label="Descargar",
+                        data=f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO\n\n{item["prospecto"]}\n\n---\nGenerado para: {item["medication"]}\nFecha de generación: {datetime.now().strftime("%d/%m/%Y")}""",
+                        file_name=f"prospecto_{item['medication'].replace(' ', '_')[:30]}_{i}.md",
+                        mime="text/markdown"
+                    )
