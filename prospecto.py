@@ -135,15 +135,9 @@ Asegúrate de usar el prospecto oficial de CIMA como referencia principal, ya qu
                 keepalive_timeout=30,  # Shorter keepalive period
                 force_close=False      # Let the server control connection closing
             )
-            timeout = aiohttp.ClientTimeout(
-                total=60,    # Longer total timeout
-                connect=20,  # Longer connect timeout
-                sock_connect=20,
-                sock_read=30
-            )
+            # Don't use global timeout - use per-request timeout to avoid context issues
             self.session = aiohttp.ClientSession(
-                connector=connector, 
-                timeout=timeout,
+                connector=connector,
                 raise_for_status=False  # Don't raise exceptions for HTTP errors
             )
         return self.session
@@ -244,16 +238,22 @@ Asegúrate de usar el prospecto oficial de CIMA como referencia principal, ya qu
             
             # Get medication details
             session = await self.get_session()
-            url = f"{self.base_url}/medicamento"
             
-            async with session.get(url, params={"nregistro": nregistro}) as response:
-                if response.status != 200:
-                    return f"Error al obtener información del medicamento: {response.status}"
-                    
-                basic_info = await response.json()
+            # Get basic info with explicit timeout
+            basic_info = {}
+            try:
+                url = f"{self.base_url}/medicamento"
+                async with session.get(url, params={"nregistro": nregistro}, timeout=30) as response:
+                    if response.status != 200:
+                        logger.warning(f"Error getting basic info: {response.status}")
+                    else:
+                        basic_info = await response.json()
+            except Exception as e:
+                logger.error(f"Error fetching basic info: {str(e)}")
+                basic_info = {"nombre": f"Medicamento {nregistro}", "pactivos": "No disponible", "labtitular": "No disponible"}
             
-            # PRIORITIZE prospecto content specifically - this is crucial for proper prospecto generation
-            prospecto_content = await self._get_prospecto_content(nregistro, session)
+            # PRIORITIZE prospecto content specifically
+            prospecto_content = await self._get_prospecto_content(nregistro)
                 
             # Create the context with clear separation between basic info and prospecto content
             context = f"""
@@ -278,26 +278,24 @@ Enlaces de referencia:
             logger.error(f"Error getting medication context: {str(e)}")
             return f"Error al obtener información del medicamento: {str(e)}"
 
-    async def _get_prospecto_content(self, nregistro: str, session: Optional[aiohttp.ClientSession] = None) -> str:
+    async def _get_prospecto_content(self, nregistro: str) -> str:
         """
         Get prospecto content with multiple fallback methods to ensure we get the patient information.
         
         Args:
             nregistro: Registration number of the medication
-            session: Optional existing aiohttp session
             
         Returns:
             Prospecto content as text
         """
-        if session is None:
-            session = await self.get_session()
-            
+        session = await self.get_session()
         prospecto_content = "No disponible"
         
         # Method 1: Try to get content using the docSegmentado API (most reliable for structured content)
         try:
             prospecto_url = f"{self.base_url}/docSegmentado/contenido/2"
-            async with session.get(prospecto_url, params={"nregistro": nregistro}) as response:
+            # Use explicit timeout for each request to avoid context errors
+            async with session.get(prospecto_url, params={"nregistro": nregistro}, timeout=30) as response:
                 if response.status == 200:
                     prospecto_data = await response.json()
                     if isinstance(prospecto_data, dict) and "contenido" in prospecto_data:
@@ -317,7 +315,8 @@ Enlaces de referencia:
             ]
             
             for url in urls_to_try:
-                async with session.get(url) as response:
+                # Add explicit timeout to each request to avoid context errors
+                async with session.get(url, timeout=30) as response:
                     if response.status == 200:
                         html_content = await response.text()
                         if html_content and len(html_content) > 100:
@@ -340,7 +339,8 @@ Enlaces de referencia:
                     section_id = {"indicaciones": "41", "posologia_procedimiento": "42", 
                                  "contraindicaciones": "43", "advertencias": "44"}.get(section, section)
                     
-                    async with session.get(section_url, params={"nregistro": nregistro, "seccion": section_id}) as response:
+                    # Add explicit timeout to each request to avoid context errors
+                    async with session.get(section_url, params={"nregistro": nregistro, "seccion": section_id}, timeout=30) as response:
                         if response.status == 200:
                             data = await response.json()
                             if isinstance(data, dict) and "contenido" in data:
