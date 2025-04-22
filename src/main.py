@@ -690,7 +690,7 @@ with tab2:
             st.session_state.resources[1].clear_history()
         st.rerun()
 
-# Improved Prospectos tab implementation with consistent styling
+# Improved Prospectos tab implementation with consistent styling and fixed formatting issues
 with tab3:
     st.write("### Generador de Prospectos de Medicamentos")
     st.markdown("""
@@ -771,17 +771,25 @@ with tab3:
                     status_text.empty()
                     progress_placeholder.empty()
                     
-                    # Display the prospecto
-                    st.subheader(f"Prospecto para: {response['medication']}")
+                    # Display the prospecto - use proper name from response
+                    medication_name = response.get('medication', 'Medicamento')
+                    # Ensure we show the proper name, not just registration number
+                    if medication_name.isdigit() or medication_name.startswith("Nº"):
+                        if 'context' in response and 'INFORMACIÓN BÁSICA DEL MEDICAMENTO:' in response['context']:
+                            # Extract name from context if registration number is shown
+                            name_match = re.search(r'- Nombre:\s*(.*?)(?:\n|$)', response['context'])
+                            if name_match:
+                                medication_name = name_match.group(1).strip()
                     
-                    # Create a container for the prospecto with consistent styling
+                    st.subheader(f"Prospecto para: {medication_name}")
+                    
+                    # Create a container and use regular markdown rendering to avoid formatting issues
                     prospecto_container = st.container()
                     with prospecto_container:
-                        st.markdown(f"""
-                        <div class="prospecto-container">
-                        {response["prospecto"]}
-                        </div>
-                        """, unsafe_allow_html=True)
+                        # Apply container styling to a div, but render the content as normal markdown
+                        st.markdown('<div class="prospecto-container">', unsafe_allow_html=True)
+                        st.markdown(response["prospecto"])  # Let Streamlit handle markdown rendering
+                        st.markdown('</div>', unsafe_allow_html=True)
                     
                     # Option to download
                     prospecto_text = f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO
@@ -789,23 +797,19 @@ with tab3:
 {response["prospecto"]}
 
 ---
-Generado para: {response["medication"]}
+Generado para: {medication_name}
 Fecha de generación: {datetime.now().strftime("%d/%m/%Y")}
 """
                     st.download_button(
                         label="Descargar prospecto",
                         data=prospecto_text,
-                        file_name=f"prospecto_{response['medication'].replace(' ', '_')[:30]}.md",
+                        file_name=f"prospecto_{medication_name.replace(' ', '_')[:30]}.md",
                         mime="text/markdown"
                     )
                     
                     # Show context in expandable section
                     with st.expander("Ver datos utilizados de CIMA"):
-                        st.markdown(f"""
-                        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 4px;">
-                        {response["context"]}
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.markdown(response["context"])
                 
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
@@ -839,17 +843,23 @@ with tab4:
             st.info("No hay prospectos en el historial")
         else:
             for i, item in enumerate(st.session_state.prospecto_history):
-                with st.expander(f"Prospecto: {item['medication']}"):
-                    # Style the prospecto consistently in history view too
-                    st.markdown(f"""
-                    <div class="prospecto-container">
-                    {item["prospecto"]}
-                    </div>
-                    """, unsafe_allow_html=True)
+                # Extract proper medication name for display
+                medication_name = item.get('medication', 'Medicamento')
+                if medication_name.isdigit() or medication_name.startswith("Nº"):
+                    if 'context' in item and 'INFORMACIÓN BÁSICA DEL MEDICAMENTO:' in item['context']:
+                        name_match = re.search(r'- Nombre:\s*(.*?)(?:\n|$)', item['context'])
+                        if name_match:
+                            medication_name = name_match.group(1).strip()
+                
+                with st.expander(f"Prospecto: {medication_name}"):
+                    # Use proper markdown rendering to avoid formatting issues
+                    st.markdown('<div class="prospecto-container">', unsafe_allow_html=True)
+                    st.markdown(item["prospecto"])
+                    st.markdown('</div>', unsafe_allow_html=True)
                     
                     st.download_button(
                         label="Descargar",
-                        data=f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO\n\n{item["prospecto"]}\n\n---\nGenerado para: {item["medication"]}\nFecha de generación: {datetime.now().strftime("%d/%m/%Y")}""",
-                        file_name=f"prospecto_{item['medication'].replace(' ', '_')[:30]}_{i}.md",
+                        data=f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO\n\n{item["prospecto"]}\n\n---\nGenerado para: {medication_name}\nFecha de generación: {datetime.now().strftime("%d/%m/%Y")}""",
+                        file_name=f"prospecto_{medication_name.replace(' ', '_')[:30]}_{i}.md",
                         mime="text/markdown"
                     )
