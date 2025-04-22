@@ -82,6 +82,15 @@ st.markdown("""
         margin-bottom: 15px;
         border-radius: 4px;
     }
+    
+    /* Prospecto content container */
+    .prospecto-container {
+        background-color: #f8f9fa;
+        border-left: 6px solid #2E7D32;
+        padding: 15px;
+        border-radius: 4px;
+        margin-bottom: 20px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -171,6 +180,8 @@ if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'current_query' not in st.session_state:
     st.session_state.current_query = ""
+if 'current_prospecto_query' not in st.session_state:
+    st.session_state.current_prospecto_query = ""
 if 'use_langgraph' not in st.session_state:
     st.session_state.use_langgraph = True
 if 'show_reasoning' not in st.session_state:
@@ -311,7 +322,7 @@ with tab1:
                             progress_bar.progress(100)
                             st.info("Esta consulta parece ser para generar un prospecto. Por favor, utilice la pestaña 'Prospectos' para esta funcionalidad.")
                             # Auto-select the Prospectos tab
-                            st.session_state.current_query = query_fm  # Preserve query for prospectos tab
+                            st.session_state.current_prospecto_query = query_fm  # Preserve query for prospectos tab
                             tab3.checkbox("Redireccionar", value=True, key="redirect_to_prospectos")
                         else:
                             # Update progress
@@ -545,7 +556,7 @@ with tab3:
         # Input for prospecto query
         prospecto_query = st.text_area(
             "Solicitud para generar un prospecto:",
-            value=st.session_state.current_query if "use la pestaña 'Prospectos'" in st.session_state.get("redirect_message", "") else "",
+            value=st.session_state.current_prospecto_query,
             height=100,
             placeholder="Ejemplo: Generar prospecto para Ibuprofeno 600mg"
         )
@@ -561,8 +572,8 @@ with tab3:
         
         for example in example_queries:
             if st.button(example, key=f"prospecto_{example}"):
-                # Set the example as the current query
-                prospecto_query = example
+                # Store in session state to preserve across reruns
+                st.session_state.current_prospecto_query = example
                 st.rerun()
     
     # Generate button
@@ -608,7 +619,15 @@ with tab3:
                     
                     # Display the prospecto
                     st.subheader(f"Prospecto para: {response['medication']}")
-                    st.markdown(response["prospecto"])
+                    
+                    # Create a container for the prospecto content with consistent styling
+                    prospecto_container = st.container()
+                    with prospecto_container:
+                        st.markdown(f"""
+                        <div class="prospecto-container">
+                        {response["prospecto"]}
+                        </div>
+                        """, unsafe_allow_html=True)
                     
                     # Option to download
                     prospecto_text = f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO
@@ -628,7 +647,11 @@ Fecha de generación: {datetime.now().strftime("%d/%m/%Y")}
                     
                     # Show context in expandable section
                     with st.expander("Ver datos utilizados de CIMA"):
-                        st.markdown(response["context"])
+                        st.markdown(f"""
+                        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 4px;">
+                        {response["context"]}
+                        </div>
+                        """, unsafe_allow_html=True)
                 
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
@@ -662,7 +685,13 @@ with tab4:
         else:
             for i, item in enumerate(st.session_state.prospecto_history):
                 with st.expander(f"Prospecto: {item['medication']}"):
-                    st.markdown(item["prospecto"])
+                    # Style the prospecto consistently in history view too
+                    st.markdown(f"""
+                    <div class="prospecto-container">
+                    {item["prospecto"]}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
                     st.download_button(
                         label="Descargar",
                         data=f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO\n\n{item["prospecto"]}\n\n---\nGenerado para: {item["medication"]}\nFecha de generación: {datetime.now().strftime("%d/%m/%Y")}""",
