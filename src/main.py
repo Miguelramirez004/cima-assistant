@@ -192,6 +192,15 @@ st.markdown("""
         border-radius: 4px;
     }
     
+    /* Prospecto content container */
+    .prospecto-container {
+        background-color: #f8f9fa;
+        border-left: 6px solid #2E7D32;
+        padding: 15px;
+        border-radius: 4px;
+        margin-bottom: 20px;
+    }
+    
     /* Debug info */
     .debug-info {
         background-color: #f8f9fa;
@@ -215,6 +224,7 @@ if 'resources' not in st.session_state:
     st.session_state.search_history = set()
     st.session_state.messages = []
     st.session_state.current_query = ""
+    st.session_state.current_prospecto_query = ""  # Add dedicated variable for prospecto queries
     st.session_state.use_langgraph = True  # Default to using the improved search
     st.session_state.show_reasoning = True  # New setting for showing reasoning
     st.session_state.debug_mode = False    # Debug mode
@@ -433,6 +443,17 @@ with tab1:
                     
                     # Process response using our managed event loop
                     response = run_async(st.session_state.resources[0].answer_question(query_fm))
+                    
+                    # Check if it's a prospecto request that was redirected
+                    if "use la pestaña 'Prospectos'" in response.get("answer", ""):
+                        status_text.text("Redirigiendo a la sección de Prospectos...")
+                        progress_bar.progress(100)
+                        st.info("Esta consulta parece ser para generar un prospecto. Por favor, utilice la pestaña 'Prospectos' para esta funcionalidad.")
+                        # Set the query for the Prospectos tab
+                        st.session_state.current_prospecto_query = query_fm
+                        # Switch to Prospectos tab
+                        tab3.checkbox("Redireccionar", value=True, key="redirect_to_prospectos")
+                        st.rerun()
                     
                     # Update progress
                     status_text.text("Generando formulación...")
@@ -669,7 +690,7 @@ with tab2:
             st.session_state.resources[1].clear_history()
         st.rerun()
 
-# Add new Prospectos tab implementation
+# Improved Prospectos tab implementation with consistent styling
 with tab3:
     st.write("### Generador de Prospectos de Medicamentos")
     st.markdown("""
@@ -686,7 +707,7 @@ with tab3:
         # Input for prospecto query
         prospecto_query = st.text_area(
             "Solicitud para generar un prospecto:",
-            value="",
+            value=st.session_state.current_prospecto_query,
             height=100,
             placeholder="Ejemplo: Generar prospecto para Ibuprofeno 600mg"
         )
@@ -702,8 +723,8 @@ with tab3:
         
         for example in example_queries:
             if st.button(example, key=f"prospecto_{example}"):
-                # Set the example as the current query
-                prospecto_query = example
+                # Store in session state to preserve across reruns
+                st.session_state.current_prospecto_query = example
                 st.rerun()
     
     # Generate button
@@ -752,7 +773,15 @@ with tab3:
                     
                     # Display the prospecto
                     st.subheader(f"Prospecto para: {response['medication']}")
-                    st.markdown(response["prospecto"])
+                    
+                    # Create a container for the prospecto with consistent styling
+                    prospecto_container = st.container()
+                    with prospecto_container:
+                        st.markdown(f"""
+                        <div class="prospecto-container">
+                        {response["prospecto"]}
+                        </div>
+                        """, unsafe_allow_html=True)
                     
                     # Option to download
                     prospecto_text = f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO
@@ -772,7 +801,11 @@ Fecha de generación: {datetime.now().strftime("%d/%m/%Y")}
                     
                     # Show context in expandable section
                     with st.expander("Ver datos utilizados de CIMA"):
-                        st.markdown(response["context"])
+                        st.markdown(f"""
+                        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 4px;">
+                        {response["context"]}
+                        </div>
+                        """, unsafe_allow_html=True)
                 
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
@@ -807,7 +840,13 @@ with tab4:
         else:
             for i, item in enumerate(st.session_state.prospecto_history):
                 with st.expander(f"Prospecto: {item['medication']}"):
-                    st.markdown(item["prospecto"])
+                    # Style the prospecto consistently in history view too
+                    st.markdown(f"""
+                    <div class="prospecto-container">
+                    {item["prospecto"]}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
                     st.download_button(
                         label="Descargar",
                         data=f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO\n\n{item["prospecto"]}\n\n---\nGenerado para: {item["medication"]}\nFecha de generación: {datetime.now().strftime("%d/%m/%Y")}""",
