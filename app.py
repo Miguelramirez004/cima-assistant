@@ -83,13 +83,42 @@ st.markdown("""
         border-radius: 4px;
     }
     
-    /* Prospecto content container */
+    /* Improved Prospecto content container */
     .prospecto-container {
-        background-color: #f8f9fa;
-        border-left: 6px solid #2E7D32;
-        padding: 15px;
-        border-radius: 4px;
+        background-color: white;
+        border-left: 1px solid #dddddd;
+        padding: 20px;
+        border-radius: 0;
         margin-bottom: 20px;
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        color: #333333;
+        max-width: 800px;
+        margin-left: auto;
+        margin-right: auto;
+        white-space: pre-line;
+    }
+    
+    .prospecto-title {
+        text-align: center;
+        font-weight: bold;
+        margin-bottom: 15px;
+        font-size: 16px;
+    }
+    
+    .prospecto-medication {
+        text-align: center;
+        font-weight: bold;
+        margin-bottom: 20px;
+        font-size: 15px;
+    }
+    
+    /* Fix dash/bullet point styling */
+    .prospecto-container ul li:before {
+        content: "- ";
+        margin-left: -15px;
+        position: absolute;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -539,7 +568,7 @@ with tab2:
             perplexity_client.clear_history()
         st.rerun()
 
-# New tab for Prospectos
+# New tab for Prospectos with improved display
 with tab3:
     st.write("### Generador de Prospectos de Medicamentos")
     st.markdown("""
@@ -629,18 +658,25 @@ with tab3:
                     
                     st.subheader(f"Prospecto para: {medication_name}")
                     
-                    # Create a container and use regular markdown rendering to avoid formatting issues
-                    prospecto_container = st.container()
-                    with prospecto_container:
-                        # Apply container styling to a div, but render the content as normal markdown
-                        st.markdown('<div class="prospecto-container">', unsafe_allow_html=True)
-                        st.markdown(response["prospecto"])  # Let Streamlit handle markdown rendering
-                        st.markdown('</div>', unsafe_allow_html=True)
+                    # Clean up any formatting artifacts in the prospecto
+                    clean_prospecto = response["prospecto"]
+                    clean_prospecto = clean_prospecto.replace('$', '')
+                    clean_prospecto = clean_prospecto.replace('**', '')
+                    clean_prospecto = clean_prospecto.replace('*', '')
+                    clean_prospecto = re.sub(r'```[a-zA-Z]*', '', clean_prospecto)
+                    clean_prospecto = clean_prospecto.replace('```', '')
+                    
+                    # Use improved container styling for AEMPS format
+                    st.markdown(f"""
+                    <div class="prospecto-container">
+                    {clean_prospecto}
+                    </div>
+                    """, unsafe_allow_html=True)
                     
                     # Option to download
-                    prospecto_text = f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO
+                    prospecto_text = f"""PROSPECTO: INFORMACIÓN PARA EL USUARIO
 
-{response["prospecto"]}
+{clean_prospecto}
 
 ---
 Generado para: {medication_name}
@@ -697,14 +733,24 @@ with tab4:
                             medication_name = name_match.group(1).strip()
                 
                 with st.expander(f"Prospecto: {medication_name}"):
-                    # Use proper markdown rendering to avoid formatting issues
-                    st.markdown('<div class="prospecto-container">', unsafe_allow_html=True)
-                    st.markdown(item["prospecto"])
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    # Clean up any formatting artifacts before displaying
+                    clean_prospecto = item["prospecto"]
+                    clean_prospecto = clean_prospecto.replace('$', '')
+                    clean_prospecto = clean_prospecto.replace('**', '')
+                    clean_prospecto = clean_prospecto.replace('*', '')
+                    clean_prospecto = re.sub(r'```[a-zA-Z]*', '', clean_prospecto)
+                    clean_prospecto = clean_prospecto.replace('```', '')
+                    
+                    # Use improved container styling for AEMPS format
+                    st.markdown(f"""
+                    <div class="prospecto-container">
+                    {clean_prospecto}
+                    </div>
+                    """, unsafe_allow_html=True)
                     
                     st.download_button(
                         label="Descargar",
-                        data=f"""# PROSPECTO: INFORMACIÓN PARA EL USUARIO\n\n{item["prospecto"]}\n\n---\nGenerado para: {medication_name}\nFecha de generación: {datetime.now().strftime("%d/%m/%Y")}""",
+                        data=f"""PROSPECTO: INFORMACIÓN PARA EL USUARIO\n\n{clean_prospecto}\n\n---\nGenerado para: {medication_name}\nFecha de generación: {datetime.now().strftime("%d/%m/%Y")}""",
                         file_name=f"prospecto_{medication_name.replace(' ', '_')[:30]}_{i}.md",
                         mime="text/markdown"
                     )
