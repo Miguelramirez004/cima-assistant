@@ -36,64 +36,32 @@ class ProspectoGenerator:
     # System prompt specifically optimized for authentic Spanish prospecto generation
     system_prompt = """Eres un experto en redacción de prospectos de medicamentos siguiendo estrictamente el formato oficial de la AEMPS española (Agencia Española de Medicamentos y Productos Sanitarios).
 
-IMPORTANTE: Un prospecto NO es lo mismo que una formulación magistral ni una ficha técnica. Un prospecto es un documento oficial dirigido a PACIENTES que acompaña a los medicamentos y explica, en lenguaje sencillo y accesible, toda la información necesaria para el uso correcto del medicamento.
+IMPORTANTE: Un prospecto es un documento oficial dirigido a PACIENTES que acompaña a los medicamentos y explica, en lenguaje sencillo y accesible, toda la información necesaria para el uso correcto del medicamento.
 
 Debes escribir en tono cercano y comprensible para un paciente promedio, evitando tecnicismos innecesarios y explicando los términos médicos complejos cuando sea necesario.
 
 ESTRUCTURA OFICIAL DEL PROSPECTO SEGÚN AEMPS:
 
-1. PROSPECTO: INFORMACIÓN PARA EL USUARIO/PACIENTE
-   [Nombre comercial, sustancia activa, formulación y dosificación]
+PROSPECTO: INFORMACIÓN PARA EL USUARIO/PACIENTE
+[Nombre comercial, sustancia activa, formulación y dosificación]
 
-2. QUÉ ES [MEDICAMENTO] Y PARA QUÉ SE UTILIZA
-   - Descripción sencilla del grupo terapéutico
-   - Enfermedades o condiciones para las que está indicado
-   - Breve explicación de cómo funciona
+Contenido del prospecto:
+1. Qué es [MEDICAMENTO] y para qué se utiliza.
+2. Qué necesita saber antes de tomar [MEDICAMENTO].
+3. Cómo tomar [MEDICAMENTO].
+4. Posibles efectos adversos.
+5. Conservación de [MEDICAMENTO].
+6. Contenido del envase e información adicional.
 
-3. ANTES DE TOMAR [MEDICAMENTO]
-   - No tome [MEDICAMENTO] si: (contraindications)
-   - Advertencias y precauciones 
-   - Uso de [MEDICAMENTO] con otros medicamentos
-   - Toma de [MEDICAMENTO] con alimentos y bebidas
-   - Embarazo, lactancia y fertilidad
-   - Conducción y uso de máquinas
-   - [MEDICAMENTO] contiene... (información sobre excipientes)
+El prospecto debe seguir los siguientes principios:
+1. Usa lenguaje directo y frases cortas
+2. Evita tecnicismos innecesarios
+3. Estructura el texto con listas y viñetas usando el símbolo "-"
+4. Dirige el texto directamente al paciente usando "usted"
+5. No uses formato markdown (**, *, #, etc.) 
+6. Solo redacta texto plano sin formateo especial
 
-4. CÓMO TOMAR/USAR [MEDICAMENTO]
-   - Instrucciones precisas de dosificación por grupo de edad
-   - Método de administración (cómo tomar correctamente)
-   - Duración del tratamiento
-   - Si toma más [MEDICAMENTO] del que debe
-   - Si olvidó tomar [MEDICAMENTO]
-   - Si interrumpe el tratamiento con [MEDICAMENTO]
-
-5. POSIBLES EFECTOS ADVERSOS
-   - Listado por frecuencia (muy frecuentes, frecuentes, poco frecuentes, raros, muy raros)
-   - Instrucciones sobre qué hacer si aparecen efectos adversos
-   - Frase estándar para reportar efectos adversos
-
-6. CONSERVACIÓN DE [MEDICAMENTO]
-   - Condiciones de almacenamiento
-   - Mantener fuera de la vista y alcance de los niños
-   - Fecha de caducidad
-   - Instrucciones de eliminación
-
-7. CONTENIDO DEL ENVASE E INFORMACIÓN ADICIONAL
-   - Composición (principio activo y excipientes)
-   - Aspecto y contenido del envase
-   - Titular de la autorización y responsable de fabricación
-   - Fecha de última revisión del prospecto
-
-IMPORTANTE:
-1. Utiliza un lenguaje directo, con frases cortas y palabras comunes
-2. Usa la segunda persona ("usted") para dirigirte al paciente
-3. Incluye los encabezados exactamente como se muestran arriba, en formato de preguntas cuando corresponda
-4. Destaca las advertencias importantes en formato negrita
-5. Usa viñetas (•) para listas de recomendaciones, efectos adversos, etc.
-6. Mantén la objetividad y precisión de la información médica, simplificándola pero sin perder exactitud
-7. Sigue estrictamente los datos de CIMA y el prospecto original proporcionado
-
-Asegúrate de usar el prospecto oficial de CIMA como referencia principal, ya que éste ya contiene la estructura y lenguaje apropiados para pacientes.
+IMPORTANTE: No uses ningún tipo de formato que pueda causar problemas en la visualización, como caracteres especiales, asteriscos o signos de dólar. Usa exclusivamente texto plano.
 """
 
     def __init__(self, openai_client: AsyncOpenAI):
@@ -438,8 +406,10 @@ Enlaces de referencia:
             }
         
         # Create an enhanced prompt that emphasizes following the AEMPS prospecto format
+        # and instructing the model to avoid markdown formatting that causes dollar signs
         prompt = f"""
-Genera un prospecto oficial siguiendo exactamente el formato de la AEMPS para la siguiente consulta:
+Genera un prospecto oficial siguiendo exactamente el formato de la AEMPS para la siguiente consulta.
+Es MUY IMPORTANTE que sigas la estructura y formato exacto del PDF oficial de ejemplo, sin añadir formato markdown.
 
 CONSULTA DEL USUARIO:
 {query}
@@ -448,26 +418,37 @@ DATOS DEL MEDICAMENTO:
 {context}
 
 INSTRUCCIONES ESPECÍFICAS:
-1. Redacta el prospecto siguiendo exactamente la estructura oficial de la AEMPS para prospectos de medicamentos
-2. Utiliza como referencia principal el contenido del prospecto oficial de CIMA que se incluye en el contexto
-3. Utiliza un lenguaje simple, claro y dirigido al paciente, NO al profesional sanitario
-4. Incluye todos los apartados que aparecen en los prospectos oficiales, con sus encabezados exactos
-5. Destaca las advertencias importantes en negrita como se hace en los prospectos reales
-6. Usa viñetas para las listas de efectos adversos, precauciones, etc.
-7. El resultado debe ser un prospecto auténtico idéntico en estructura y formato a los que acompañan a medicamentos en España
+1. Redacta el prospecto siguiendo EXACTAMENTE la estructura oficial de la AEMPS.
+2. Utiliza como referencia principal el contenido del prospecto oficial de CIMA que se incluye en el contexto.
+3. Utiliza un lenguaje simple, claro y dirigido al paciente, NO al profesional sanitario.
+4. Incluye todos los apartados que aparecen en los prospectos oficiales, con sus encabezados exactos.
+5. IMPORTANTE: NO uses formato markdown como asteriscos, almohadillas, etc. que puedan causar problemas de visualización.
+6. Para los guiones o viñetas, usa simplemente el símbolo "-" sin formateo especial.
+7. NO uses formato de código (```), negrita (**), cursiva (*) o símbolos especiales como $ en el texto.
+8. El resultado debe ser texto plano con la misma estructura que aparece en el PDF oficial.
 
-NO incluyas información técnica innecesaria que confundiría a un paciente. El prospecto debe ser accesible para cualquier persona sin conocimientos médicos.
+Encabezado obligatorio:
+"PROSPECTO: INFORMACIÓN PARA EL USUARIO
+[Nombre del medicamento, principio activo, formulación]"
+
+Seguido de estas secciones en este orden exacto:
+1. Qué es [MEDICAMENTO] y para qué se utiliza
+2. Qué necesita saber antes de tomar [MEDICAMENTO]
+3. Cómo tomar [MEDICAMENTO]
+4. Posibles efectos adversos
+5. Conservación de [MEDICAMENTO]
+6. Contenido del envase e información adicional
 """
 
         try:
-            # Generate the prospecto using OpenAI
+            # Generate the prospecto using OpenAI with a lower temperature for more consistency
             response = await self.openai_client.chat.completions.create(
                 model=Config.CHAT_MODEL,
                 messages=[
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.5  # Slightly lower temperature for more consistency
+                temperature=0.4  # Lower temperature for more consistent formatting
             )
             
             prospecto = response.choices[0].message.content
@@ -478,7 +459,14 @@ NO incluyas información técnica innecesaria que confundiría a un paciente. El
             if match:
                 medication_name = match.group(1)
             
-            # Post-process the prospecto to ensure proper formatting
+            # Clean up formatting issues that may cause dollar signs
+            prospecto = prospecto.replace('$', '')
+            prospecto = prospecto.replace('**', '')
+            prospecto = prospecto.replace('*', '')
+            prospecto = re.sub(r'```[a-zA-Z]*', '', prospecto)
+            prospecto = prospecto.replace('```', '')
+            
+            # Apply additional formatting fix
             prospecto = self._format_prospecto(prospecto, medication_name)
             
             return {
@@ -496,7 +484,8 @@ NO incluyas información técnica innecesaria que confundiría a un paciente. El
     
     def _format_prospecto(self, raw_prospecto: str, medication_name: str) -> str:
         """
-        Apply final formatting to ensure prospecto follows AEMPS conventions.
+        Apply final formatting to ensure prospecto follows AEMPS conventions like
+        the official example provided in the PDF.
         
         Args:
             raw_prospecto: Generated prospecto text
@@ -505,40 +494,49 @@ NO incluyas información técnica innecesaria que confundiría a un paciente. El
         Returns:
             Properly formatted prospecto
         """
+        # First, clean up any dollar signs that might appear from markdown formatting
+        raw_prospecto = raw_prospecto.replace('$', '')
+        
         # Ensure the prospecto starts with the standard header if it doesn't already
         if not raw_prospecto.strip().startswith("PROSPECTO:"):
-            raw_prospecto = f"PROSPECTO: INFORMACIÓN PARA EL PACIENTE\n\n{medication_name}\n\n" + raw_prospecto
-            
-        # Ensure section headings are properly formatted
-        standard_sections = [
-            "QUÉ ES", "ANTES DE", "CÓMO TOMAR", "POSIBLES EFECTOS", 
-            "CONSERVACIÓN", "CONTENIDO DEL ENVASE"
+            raw_prospecto = f"PROSPECTO: INFORMACIÓN PARA EL USUARIO\n\n{medication_name}\n\n" + raw_prospecto
+        
+        # Clean up any markdown formatting that might cause dollar signs to appear
+        raw_prospecto = raw_prospecto.replace('**', '')  # Remove all bold formatting
+        raw_prospecto = raw_prospecto.replace('*', '')   # Remove all italic formatting
+        
+        # Ensure standard structure with proper spacing matches the PDF example
+        sections = [
+            "1. Qué es", 
+            "2. Qué necesita saber antes de", 
+            "3. Cómo tomar", 
+            "4. Posibles efectos adversos", 
+            "5. Conservación de", 
+            "6. Contenido del envase"
         ]
         
-        for section in standard_sections:
-            # Find headings without proper formatting and add it
-            pattern = re.compile(f"([^#\n])(\\d+\\. {section})", re.IGNORECASE)
-            raw_prospecto = pattern.sub(r"\1\n\n\2", raw_prospecto)
-            
-            # Ensure headings are in bold
-            pattern = re.compile(f"(\\d+\\. {section}[^\n]*)", re.IGNORECASE)
-            raw_prospecto = pattern.sub(r"**\1**", raw_prospecto)
+        # Fix section formatting
+        for section in sections:
+            # Ensure proper spacing before sections
+            raw_prospecto = re.sub(f"([^\n])\n({section})", r"\1\n\n\2", raw_prospecto)
         
-        # Add blank lines before subheadings for readability
-        raw_prospecto = re.sub(r'(\n)(-|\•) ', r'\n\n$2 ', raw_prospecto)
+        # Fix subsection formatting to match the PDF example
+        subsections = [
+            "No tome", "Advertencias y precauciones", "Toma con otros medicamentos",
+            "Embarazo", "lactancia", "Conducción", "Si toma más", "Si olvidó tomar"
+        ]
         
-        # Ensure warning sections are in bold
-        warnings = ["No tome", "Advertencias y precauciones", "Si toma más", "Si olvidó tomar"]
-        for warning in warnings:
-            pattern = re.compile(f"({warning}[^:\n]*:)", re.IGNORECASE)
-            raw_prospecto = pattern.sub(r"**\1**", raw_prospecto)
+        for subsection in subsections:
+            # Ensure proper spacing
+            raw_prospecto = re.sub(f"([^\n])\n({subsection})", r"\1\n\n\2", raw_prospecto)
         
-        # Make sure effect frequency sections are emphasized
-        frequencies = ["Muy frecuentes", "Frecuentes", "Poco frecuentes", "Raros", "Muy raros"]
-        for freq in frequencies:
-            pattern = re.compile(f"({freq}[^:\n]*:)", re.IGNORECASE)
-            raw_prospecto = pattern.sub(r"*\1*", raw_prospecto)
-            
+        # Fix bullet points to match the dash format in the PDF
+        raw_prospecto = re.sub(r'•\s+', '- ', raw_prospecto)
+        raw_prospecto = re.sub(r'\* ', '- ', raw_prospecto)
+        
+        # Fix spacing issues
+        raw_prospecto = re.sub(r'\n{3,}', '\n\n', raw_prospecto)  # Remove excessive blank lines
+        
         return raw_prospecto
     
     async def close(self):
