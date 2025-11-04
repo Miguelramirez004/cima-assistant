@@ -115,103 +115,126 @@ def init_resources():
     
     return formulation_agent, perplexity_client, prospecto_generator
 
-# Custom CSS with just the essential styling
+# Minimalist CSS styling
 st.markdown("""
 <style>
-    /* Apple-style font for entire app */
+    /* Clean, professional font stack */
     html, body, [class*="css"] {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif !important;
     }
-    
-    .main .block-container {padding-top: 2rem;}
+
+    /* Cleaner spacing */
+    .main .block-container {padding-top: 1.5rem;}
     .stTabs [data-baseweb="tab-panel"] {padding-top: 1rem;}
-    div.stButton > button:first-child {background-color: #4CAF50; color: white;}
-    div.stButton > button:hover {background-color: #45a049;}
-    
-    /* Info box styling */
+
+    /* Subtle, professional buttons */
+    div.stButton > button:first-child {
+        background-color: #4A5568;
+        color: white;
+        border: none;
+        border-radius: 4px;
+    }
+    div.stButton > button:hover {
+        background-color: #2D3748;
+    }
+
+    /* Minimal info box - subtle border only */
     .info-box {
-        background-color: #2E7D32;
-        border-left: 6px solid #1B5E20;
-        padding: 10px;
-        margin-bottom: 10px;
+        border-left: 3px solid #CBD5E0;
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        background-color: transparent;
+        font-size: 0.9em;
+        color: #4A5568;
     }
-    
-    /* Reasoning box styling */
+
+    /* Clean reasoning box */
     .reasoning-box {
-        background-color: #f8f9fa;
-        border-left: 6px solid #10a37f;
-        padding: 15px;
-        margin-bottom: 15px;
+        background-color: #F7FAFC;
+        border-left: 3px solid #4A5568;
+        padding: 12px 16px;
+        margin-bottom: 16px;
         border-radius: 4px;
     }
-    
-    /* References styling */
-    .reference-item {
-        background-color: #f0f2f6;
-        border-left: 4px solid #4b5f84;
-        padding: 10px;
+
+    .reasoning-box h4 {
+        font-size: 0.9em;
+        color: #4A5568;
         margin-bottom: 8px;
-        border-radius: 4px;
+    }
+
+    /* Compact references */
+    .reference-item {
+        background-color: transparent;
+        border-left: 2px solid #E2E8F0;
+        padding: 8px 12px;
+        margin-bottom: 6px;
+        font-size: 0.85em;
+    }
+
+    .reference-title {
+        font-weight: 600;
+        color: #2D3748;
         font-size: 0.9em;
     }
-    
-    .reference-title {
-        font-weight: bold;
-        color: #2c3e50;
-    }
-    
+
     .reference-url {
-        color: #3498db;
+        color: #4A5568;
         word-break: break-all;
+        font-size: 0.85em;
     }
-    
-    /* Hide Streamlit elements for cleaner UI */
-    .css-18e3th9 {
-        padding-top: 1rem;
-        padding-bottom: 1rem;
+
+    /* Minimal thinking indicator */
+    @keyframes thinking-animation {
+        0% { opacity: 0.5; }
+        50% { opacity: 1.0; }
+        100% { opacity: 0.5; }
     }
-    
-    /* Better spacing for chat messages */
+
+    .thinking-indicator {
+        animation: thinking-animation 1.5s infinite;
+        background-color: #F7FAFC;
+        border-left: 3px solid #A0AEC0;
+        padding: 12px 16px;
+        margin-bottom: 12px;
+        border-radius: 4px;
+    }
+
+    .thinking-indicator h4 {
+        font-size: 0.9em;
+        color: #4A5568;
+    }
+
+    /* Clean prospecto container */
+    .prospecto-container {
+        background-color: transparent;
+        border-left: 3px solid #CBD5E0;
+        padding: 12px 16px;
+        border-radius: 4px;
+        margin-bottom: 16px;
+    }
+
+    /* Minimal debug info */
+    .debug-info {
+        background-color: #F7FAFC;
+        border: 1px solid #E2E8F0;
+        padding: 8px;
+        margin-top: 8px;
+        font-size: 0.75em;
+        font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+        white-space: pre-wrap;
+        overflow-x: auto;
+        border-radius: 4px;
+    }
+
+    /* Better chat message spacing */
     [data-testid="stChatMessage"] {
         margin-bottom: 0.5rem;
     }
-    
-    /* Animated thinking indicator */
-    @keyframes thinking-animation {
-        0% { opacity: 0.4; }
-        50% { opacity: 1.0; }
-        100% { opacity: 0.4; }
-    }
-    
-    .thinking-indicator {
-        animation: thinking-animation 1.5s infinite;
-        background-color: #f0f2f6;
-        border-left: 6px solid #3498db;
-        padding: 15px;
-        margin-bottom: 15px;
-        border-radius: 4px;
-    }
-    
-    /* Prospecto content container */
-    .prospecto-container {
-        background-color: #f8f9fa;
-        border-left: 6px solid #2E7D32;
-        padding: 15px;
-        border-radius: 4px;
-        margin-bottom: 20px;
-    }
-    
-    /* Debug info */
-    .debug-info {
-        background-color: #f8f9fa;
-        border: 1px solid #ddd;
-        padding: 10px;
-        margin-top: 10px;
-        font-size: 0.8em;
-        font-family: monospace;
-        white-space: pre-wrap;
-        overflow-x: auto;
-    }
+
+    /* Hide unnecessary elements */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -229,186 +252,124 @@ if 'resources' not in st.session_state:
     st.session_state.show_reasoning = True  # New setting for showing reasoning
     st.session_state.debug_mode = False    # Debug mode
 
-# Title and description
+# Clean title
 st.title("🧪 CIMA Assistant")
-st.markdown("### *Sistema inteligente de consulta para formulación magistral y CIMA*")
+st.caption("Sistema de consulta para formulación magistral y medicamentos")
 
-# Sidebar 
+# Minimal Sidebar
 with st.sidebar:
-    st.header("Información")
-    st.markdown("""
-    Este asistente utiliza la API CIMA (Centro de Información online de Medicamentos) de la AEMPS para proporcionar:
-    
-    - Formulaciones magistrales detalladas
-    - Consultas sobre medicamentos con IA avanzada
-    - Prospectos de medicamentos
-    - Referencias a información oficial
-    """)
-    
-    # Add search mode setting for formulation (still using LangGraph there)
-    st.header("Ajustes")
-    use_langgraph = st.toggle("Usar búsqueda avanzada para formulación", value=st.session_state.use_langgraph)
-    
-    # Update session state and agents if toggle changed
+    st.markdown("### Ajustes")
+
+    # Compact settings toggles
+    use_langgraph = st.toggle("Búsqueda avanzada", value=st.session_state.use_langgraph,
+                               help="Activa búsqueda avanzada para formulaciones")
+
     if use_langgraph != st.session_state.use_langgraph:
         st.session_state.use_langgraph = use_langgraph
-        # Update formulation agent settings
         if st.session_state.resources and st.session_state.resources[0]:
             st.session_state.resources[0].use_langgraph = use_langgraph
-        st.info(f"Modo de búsqueda para formulación: {'Avanzado' if use_langgraph else 'Estándar'}")
-    
-    # Add toggle for showing reasoning process
-    show_reasoning = st.toggle("Mostrar proceso de razonamiento", value=st.session_state.show_reasoning)
+
+    show_reasoning = st.toggle("Mostrar razonamiento", value=st.session_state.show_reasoning,
+                                help="Muestra el proceso de razonamiento del asistente")
     if show_reasoning != st.session_state.show_reasoning:
         st.session_state.show_reasoning = show_reasoning
-        st.info(f"Visualización de razonamiento: {'Activado' if show_reasoning else 'Desactivado'}")
-    
-    # Debug mode toggle (hidden in production, enable with query param ?debug=true)
+
+    # Debug mode (hidden unless query param is set)
     debug_param = st.query_params.get("debug")
     if debug_param == "true":
-        debug_mode = st.toggle("Modo depuración", value=st.session_state.debug_mode)
+        debug_mode = st.toggle("Depuración", value=st.session_state.debug_mode)
         if debug_mode != st.session_state.debug_mode:
             st.session_state.debug_mode = debug_mode
-            st.info(f"Modo depuración: {'Activado' if debug_mode else 'Desactivado'}")
-    
-    st.header("Historial de búsquedas")
-    if st.session_state.search_history:
-        for query in list(st.session_state.search_history)[-5:]:
-            st.markdown(f"- {query}")
-    else:
-        st.markdown("No hay búsquedas recientes")
-    
-    if st.button("Limpiar historial"):
-        # Reset state
-        st.session_state.search_history = set()
-        st.session_state.formulation_history = []
-        st.session_state.prospecto_history = []  # Clear prospecto history
-        if st.session_state.resources and st.session_state.resources[1]:
-            # Clear Perplexity client history
-            st.session_state.resources[1].clear_history()
-        st.session_state.messages = []
-        st.rerun()
 
-    # Add diagnostic button (keep for CIMA API testing)
-    if st.button("Diagnóstico CIMA", key="diagnostico"):
-        st.info("Ejecutando diagnóstico de conexión con CIMA...")
-        
-        progress = st.progress(0)
-        status = st.empty()
-        
-        # Prueba 1: Conexión básica a CIMA
-        status.text("Probando conexión básica a CIMA...")
-        
-        try:
+    st.divider()
+
+    # Compact history display
+    if st.session_state.search_history:
+        with st.expander("📝 Búsquedas recientes"):
+            for query in list(st.session_state.search_history)[-5:]:
+                st.caption(query)
+
+    # Compact action buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Limpiar", use_container_width=True):
+            st.session_state.search_history = set()
+            st.session_state.formulation_history = []
+            st.session_state.prospecto_history = []
+            if st.session_state.resources and st.session_state.resources[1]:
+                st.session_state.resources[1].clear_history()
+            st.session_state.messages = []
+            st.rerun()
+
+    with col2:
+        # Diagnostic tool in expander (less prominent)
+        if st.button("Diagnóstico", use_container_width=True, key="diagnostico_btn"):
+            st.session_state.show_diagnostico = not st.session_state.get('show_diagnostico', False)
+
+    # Show diagnostic in expander when button is clicked
+    if st.session_state.get('show_diagnostico', False):
+        with st.expander("🔧 Diagnóstico CIMA", expanded=True):
             import requests
-            response = requests.get("https://cima.aemps.es/cima/rest/medicamentos")
-            if response.status_code == 200:
-                st.success(f"✅ Conexión básica a CIMA exitosa (Status: {response.status_code})")
-            else:
-                st.error(f"❌ Error en conexión básica a CIMA (Status: {response.status_code})")
-            progress.progress(25)
-        except Exception as e:
-            st.error(f"❌ Error en conexión básica: {str(e)}")
-        
-        # Prueba 2: Acceso a medicamento específico
-        status.text("Probando acceso a medicamento específico...")
-        
-        try:
-            # Usar MINOXIDIL BIORGA como prueba
-            nregistro = "78929" # MINOXIDIL BIORGA
-            response = requests.get(f"https://cima.aemps.es/cima/rest/medicamento?nregistro={nregistro}")
-            if response.status_code == 200:
-                data = response.json()
-                st.success(f"✅ Acceso a medicamento exitoso: {data.get('nombre', 'Sin nombre')}")
-            else:
-                st.error(f"❌ Error en acceso a medicamento (Status: {response.status_code})")
-            progress.progress(50)
-        except Exception as e:
-            st.error(f"❌ Error en acceso a medicamento: {str(e)}")
-        
-        # Prueba 3: Acceso a ficha técnica
-        status.text("Probando acceso a ficha técnica...")
-        
-        try:
-            response = requests.get(f"https://cima.aemps.es/cima/rest/docSegmentado/contenido/1?nregistro={nregistro}")
-            if response.status_code == 200:
-                st.success(f"✅ Acceso a ficha técnica exitoso via API")
-            else:
-                st.error(f"❌ Error en acceso a ficha técnica via API (Status: {response.status_code})")
-            
-            # Probar acceso directo HTML
-            response = requests.get(f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html")
-            if response.status_code == 200:
-                st.success(f"✅ Acceso a ficha técnica HTML exitoso (longitud: {len(response.text)})")
-            else:
-                st.error(f"❌ Error en acceso a ficha técnica HTML (Status: {response.status_code})")
-            progress.progress(75)
-        except Exception as e:
-            st.error(f"❌ Error en acceso a ficha técnica: {str(e)}")
-        
-        # Prueba 4: Impresión de respuesta completa para diagnóstico
-        status.text("Obteniendo detalles completos...")
-        
-        try:
-            url = f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html"
-            response = requests.get(url)
-            
-            if response.status_code == 200:
-                content = response.text
-                with st.expander("Ver primeros 1000 caracteres de la respuesta"):
-                    st.code(content[:1000])
-                st.success(f"✅ Contenido obtenido correctamente (longitud: {len(content)})")
-            else:
-                st.error(f"❌ Error obteniendo contenido HTML (Status: {response.status_code})")
-            progress.progress(100)
-        except Exception as e:
-            st.error(f"❌ Error obteniendo contenido: {str(e)}")
-        
-        status.empty()
-        st.info("Diagnóstico completo")
+
+            try:
+                # Test 1: Basic connection
+                response = requests.get("https://cima.aemps.es/cima/rest/medicamentos", timeout=5)
+                if response.status_code == 200:
+                    st.success("✅ Conexión CIMA OK")
+                else:
+                    st.error(f"❌ Error: {response.status_code}")
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)[:50]}")
+
+            try:
+                # Test 2: Medication access
+                nregistro = "78929"
+                response = requests.get(f"https://cima.aemps.es/cima/rest/medicamento?nregistro={nregistro}", timeout=5)
+                if response.status_code == 200:
+                    st.success("✅ Acceso medicamentos OK")
+                else:
+                    st.error(f"❌ Error medicamentos: {response.status_code}")
+            except Exception as e:
+                st.error(f"❌ Error medicamentos: {str(e)[:50]}")
 
 # Main tabs - Updated to include Prospectos tab
 tab1, tab2, tab3, tab4 = st.tabs(["Formulación Magistral", "Consultas CIMA", "Prospectos", "Historial"])
 
 with tab1:
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        st.write("### Asistente para formulación magistral basado en CIMA")
-        st.markdown("""
-        <div class="info-box">
-        Ingrese su consulta sobre formulación magistral. Especifique el principio activo, 
-        concentración deseada y tipo de formulación para obtener mejores resultados.
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Handle query text area
-        query_fm = st.text_area(
-            "Ingrese su consulta sobre formulación:",
-            value=st.session_state.current_query,
-            height=100, 
-            placeholder="Ejemplo: Suspensión de Ibuprofeno 100mg/ml para uso pediátrico"
-        )
-    
-    with col2:
-        st.write("### Ejemplos")
+    st.markdown("### Formulación Magistral")
+
+    # Minimal info hint
+    st.markdown("""
+    <div class="info-box">
+    Especifique el principio activo, concentración y tipo de formulación.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Handle query text area
+    query_fm = st.text_area(
+        "Consulta:",
+        value=st.session_state.current_query,
+        height=100,
+        placeholder="Ej: Suspensión de Ibuprofeno 100mg/ml para uso pediátrico"
+    )
+
+    # Collapsed examples
+    with st.expander("💡 Ver ejemplos"):
         example_queries = [
             "Suspensión de Omeprazol 2mg/ml",
             "Crema de Hidrocortisona al 1%",
             "Cápsulas de Melatonina 3mg",
             "Gel de Metronidazol 0.75%",
-            "Solución de Minoxidil 5%"
+            "Solución de Minoxidil 5%",
+            "MINOXIDIL BIORGA"
         ]
-        
-        for example in example_queries:
-            if st.button(example):
-                st.session_state.current_query = example
-                st.rerun()
-        
-        # Add a special example for the abacavir problem
-        if st.button("MINOXIDIL BIORGA"):
-            st.session_state.current_query = "Encontrar información sobre MINOXIDIL BIORGA"
-            st.rerun()
+
+        cols = st.columns(2)
+        for i, example in enumerate(example_queries):
+            with cols[i % 2]:
+                if st.button(example, key=f"fm_ex_{i}", use_container_width=True):
+                    st.session_state.current_query = example if example != "MINOXIDIL BIORGA" else "Encontrar información sobre MINOXIDIL BIORGA"
+                    st.rerun()
     
     if st.button("Consultar Formulación", type="primary"):
         if not query_fm:
@@ -424,41 +385,22 @@ with tab1:
             
             # Add to search history
             st.session_state.search_history.add(query_fm)
-            
-            # Progress indicators for better user experience
-            progress_placeholder = st.empty()
-            status_text = st.empty()
-            
-            with st.spinner("Procesando su consulta..."):
+
+            # Simple progress indicator
+            with st.spinner("Procesando consulta..."):
                 try:
-                    # Show progress updates
-                    with progress_placeholder.container():
-                        progress_bar = st.progress(0)
-                    
-                    status_text.text("Buscando información en CIMA...")
-                    progress_bar.progress(25)
-                    
                     # Set the agent's search mode based on current setting
                     st.session_state.resources[0].use_langgraph = st.session_state.use_langgraph
-                    
+
                     # Process response using our managed event loop
                     response = run_async(st.session_state.resources[0].answer_question(query_fm))
-                    
+
                     # Check if it's a prospecto request that was redirected
                     if "use la pestaña 'Prospectos'" in response.get("answer", ""):
-                        status_text.text("Redirigiendo a la sección de Prospectos...")
-                        progress_bar.progress(100)
-                        st.info("Esta consulta parece ser para generar un prospecto. Por favor, utilice la pestaña 'Prospectos' para esta funcionalidad.")
-                        # Set the query for the Prospectos tab
+                        st.info("Esta consulta es para generar un prospecto. Use la pestaña 'Prospectos'.")
                         st.session_state.current_prospecto_query = query_fm
-                        # Switch to Prospectos tab
-                        tab3.checkbox("Redireccionar", value=True, key="redirect_to_prospectos")
                         st.rerun()
-                    
-                    # Update progress
-                    status_text.text("Generando formulación...")
-                    progress_bar.progress(75)
-                    
+
                     # Store in formulation history
                     st.session_state.formulation_history.append({
                         "query": query_fm,
@@ -466,11 +408,6 @@ with tab1:
                         "context": response["context"],
                         "references": response["references"]
                     })
-                    
-                    # Complete progress
-                    progress_bar.progress(100)
-                    status_text.empty()
-                    progress_placeholder.empty()
                     
                     st.subheader("Formulación:")
                     st.markdown(response["answer"])
@@ -509,24 +446,21 @@ with tab1:
                     logger.error(f"Error processing formulation query: {str(e)}")
 
 with tab2:
-    st.write("### Chat con experto CIMA")
+    st.markdown("### Consultas CIMA")
+
+    # Minimal info hint
     st.markdown("""
     <div class="info-box">
-    Realice consultas sobre medicamentos.
-    Puede preguntar sobre indicaciones, contraindicaciones, dosis, efectos secundarios, etc.
+    Pregunte sobre indicaciones, dosis, contraindicaciones, efectos secundarios, etc.
     </div>
     """, unsafe_allow_html=True)
-    
-    # Example section
-    with st.expander("Ver ejemplos de consultas"):
-        st.markdown("""
-        - ¿Cuáles son los efectos secundarios del ibuprofeno?
-        - ¿Qué dosis de paracetamol es segura para niños?
-        - ¿Qué interacciones tiene la simvastatina con otros medicamentos?
-        - ¿Cuáles son las contraindicaciones del omeprazol?
-        - ¿Es seguro tomar metformina durante el embarazo?
-        - ¿Cuál es la diferencia entre lorazepam y diazepam?
-        """)
+
+    # Example section - more compact
+    with st.expander("💡 Ejemplos"):
+        st.caption("¿Cuáles son los efectos secundarios del ibuprofeno?")
+        st.caption("¿Qué dosis de paracetamol es segura para niños?")
+        st.caption("¿Qué interacciones tiene la simvastatina?")
+        st.caption("¿Es seguro tomar metformina durante el embarazo?")
     
     # Chat container
     chat_container = st.container()
@@ -580,18 +514,14 @@ with tab2:
 
         # Process and display assistant response using Perplexity
         with st.chat_message("assistant"):
-            # Progress indicators
-            progress_placeholder = st.empty()
-            
-            # Create a placeholder for the "thinking" animation
+            # Minimal thinking indicator
             thinking_placeholder = st.empty()
             thinking_placeholder.markdown("""
             <div class="thinking-indicator">
-            <h4>💭 Pensando...</h4>
-            <p>Estoy analizando la información médica disponible sobre su consulta. Este proceso puede tomar unos segundos...</p>
+            <h4>💭 Analizando...</h4>
             </div>
             """, unsafe_allow_html=True)
-            
+
             with st.spinner("Buscando información..."):
                 try:
                     # Get the perplexity client
@@ -690,42 +620,40 @@ with tab2:
             st.session_state.resources[1].clear_history()
         st.rerun()
 
-# Improved Prospectos tab implementation with consistent styling and fixed formatting issues
+# Minimalist Prospectos tab
 with tab3:
-    st.write("### Generador de Prospectos de Medicamentos")
+    st.markdown("### Prospectos")
+
+    # Minimal info hint
     st.markdown("""
     <div class="info-box">
-    Genere prospectos completos para medicamentos según la normativa de la AEMPS.
-    Especifique el nombre del medicamento o principio activo para obtener mejores resultados.
+    Genere prospectos según normativa AEMPS. Especifique nombre o principio activo.
     </div>
     """, unsafe_allow_html=True)
-    
-    # Create columns for input and examples
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        # Input for prospecto query
-        prospecto_query = st.text_area(
-            "Solicitud para generar un prospecto:",
-            value=st.session_state.current_prospecto_query,
-            height=100,
-            placeholder="Ejemplo: Generar prospecto para Ibuprofeno 600mg"
-        )
-    
-    with col2:
-        st.write("### Ejemplos")
+
+    # Input for prospecto query
+    prospecto_query = st.text_area(
+        "Consulta:",
+        value=st.session_state.current_prospecto_query,
+        height=100,
+        placeholder="Ej: Generar prospecto para Ibuprofeno 600mg"
+    )
+
+    # Collapsed examples
+    with st.expander("💡 Ver ejemplos"):
         example_queries = [
             "Generar prospecto para Ibuprofeno 600mg",
             "Prospecto de Omeprazol 20mg",
             "Crear prospecto para Amoxicilina 500mg",
             "Prospecto para MINOXIDIL BIORGA"
         ]
-        
-        for example in example_queries:
-            if st.button(example, key=f"prospecto_{example}"):
-                # Store in session state to preserve across reruns
-                st.session_state.current_prospecto_query = example
-                st.rerun()
+
+        cols = st.columns(2)
+        for i, example in enumerate(example_queries):
+            with cols[i % 2]:
+                if st.button(example, key=f"prospecto_ex_{i}", use_container_width=True):
+                    st.session_state.current_prospecto_query = example
+                    st.rerun()
     
     # Generate button
     if st.button("Generar Prospecto", type="primary", key="generate_prospecto"):
@@ -734,30 +662,16 @@ with tab3:
         else:
             # Add to search history
             st.session_state.search_history.add(prospecto_query)
-            
-            # Progress indicators
-            progress_placeholder = st.empty()
-            status_text = st.empty()
-            
+
+            # Simple progress indicator
             with st.spinner("Generando prospecto..."):
                 try:
-                    # Show progress updates
-                    with progress_placeholder.container():
-                        progress_bar = st.progress(0)
-                    
-                    status_text.text("Buscando información en CIMA...")
-                    progress_bar.progress(30)
-                    
                     # Get prospecto generator from resources
-                    prospecto_generator = st.session_state.resources[2]  # Third element in the tuple
-                    
+                    prospecto_generator = st.session_state.resources[2]
+
                     # Generate prospecto
                     response = run_async(prospecto_generator.generate_prospecto, prospecto_query)
-                    
-                    # Update progress
-                    status_text.text("Finalizando prospecto...")
-                    progress_bar.progress(80)
-                    
+
                     # Add to history
                     st.session_state.prospecto_history.append({
                         "query": prospecto_query,
@@ -765,11 +679,6 @@ with tab3:
                         "context": response["context"],
                         "medication": response["medication"]
                     })
-                    
-                    # Complete progress
-                    progress_bar.progress(100)
-                    status_text.empty()
-                    progress_placeholder.empty()
                     
                     # Display the prospecto - use proper name from response
                     medication_name = response.get('medication', 'Medicamento')

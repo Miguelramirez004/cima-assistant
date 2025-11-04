@@ -17,109 +17,127 @@ load_dotenv()
 # Configure page
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
-# Custom CSS styling
+# Minimalist CSS styling
 st.markdown("""
 <style>
-    /* Apple-style font for entire app */
+    /* Clean, professional font stack */
     html, body, [class*="css"] {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif !important;
     }
-    
-    .main .block-container {padding-top: 2rem;}
+
+    /* Cleaner spacing */
+    .main .block-container {padding-top: 1.5rem;}
     .stTabs [data-baseweb="tab-panel"] {padding-top: 1rem;}
-    div.stButton > button:first-child {background-color: #4CAF50; color: white;}
-    div.stButton > button:hover {background-color: #45a049;}
-    
-    /* Info box styling */
+
+    /* Subtle, professional buttons */
+    div.stButton > button:first-child {
+        background-color: #4A5568;
+        color: white;
+        border: none;
+        border-radius: 4px;
+    }
+    div.stButton > button:hover {
+        background-color: #2D3748;
+    }
+
+    /* Minimal info box - subtle border only */
     .info-box {
-        background-color: #2E7D32;
-        border-left: 6px solid #1B5E20;
-        padding: 10px;
-        margin-bottom: 10px;
+        border-left: 3px solid #CBD5E0;
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        background-color: transparent;
+        font-size: 0.9em;
+        color: #4A5568;
     }
-    
-    /* Reasoning box styling */
+
+    /* Clean reasoning box */
     .reasoning-box {
-        background-color: #f8f9fa;
-        border-left: 6px solid #10a37f;
-        padding: 15px;
-        margin-bottom: 15px;
+        background-color: #F7FAFC;
+        border-left: 3px solid #4A5568;
+        padding: 12px 16px;
+        margin-bottom: 16px;
         border-radius: 4px;
     }
-    
-    /* References styling */
-    .reference-item {
-        background-color: #f0f2f6;
-        border-left: 4px solid #4b5f84;
-        padding: 10px;
+
+    .reasoning-box h4 {
+        font-size: 0.9em;
+        color: #4A5568;
         margin-bottom: 8px;
-        border-radius: 4px;
+    }
+
+    /* Compact references */
+    .reference-item {
+        background-color: transparent;
+        border-left: 2px solid #E2E8F0;
+        padding: 8px 12px;
+        margin-bottom: 6px;
+        font-size: 0.85em;
+    }
+
+    .reference-title {
+        font-weight: 600;
+        color: #2D3748;
         font-size: 0.9em;
     }
-    
-    .reference-title {
-        font-weight: bold;
-        color: #2c3e50;
-    }
-    
+
     .reference-url {
-        color: #3498db;
+        color: #4A5568;
         word-break: break-all;
+        font-size: 0.85em;
     }
-    
-    /* Animated thinking indicator */
+
+    /* Minimal thinking indicator */
     @keyframes thinking-animation {
-        0% { opacity: 0.4; }
+        0% { opacity: 0.5; }
         50% { opacity: 1.0; }
-        100% { opacity: 0.4; }
+        100% { opacity: 0.5; }
     }
-    
+
     .thinking-indicator {
         animation: thinking-animation 1.5s infinite;
-        background-color: #f0f2f6;
-        border-left: 6px solid #3498db;
-        padding: 15px;
-        margin-bottom: 15px;
+        background-color: #F7FAFC;
+        border-left: 3px solid #A0AEC0;
+        padding: 12px 16px;
+        margin-bottom: 12px;
         border-radius: 4px;
     }
-    
-    /* Improved Prospecto content container */
+
+    .thinking-indicator h4 {
+        font-size: 0.9em;
+        color: #4A5568;
+    }
+
+    /* Clean prospecto container */
     .prospecto-container {
-        background-color: white;
-        border-left: 1px solid #dddddd;
-        padding: 20px;
-        border-radius: 0;
-        margin-bottom: 20px;
+        background-color: transparent;
+        border-left: 3px solid #CBD5E0;
+        padding: 12px 16px;
+        border-radius: 4px;
+        margin-bottom: 16px;
         font-family: Arial, sans-serif;
         font-size: 14px;
         line-height: 1.5;
-        color: #333333;
         max-width: 800px;
-        margin-left: auto;
-        margin-right: auto;
         white-space: pre-line;
     }
-    
+
     .prospecto-title {
         text-align: center;
         font-weight: bold;
         margin-bottom: 15px;
         font-size: 16px;
     }
-    
+
     .prospecto-medication {
         text-align: center;
         font-weight: bold;
         margin-bottom: 20px;
         font-size: 15px;
     }
-    
-    /* Fix dash/bullet point styling */
-    .prospecto-container ul li:before {
-        content: "- ";
-        margin-left: -15px;
-        position: absolute;
-    }
+
+    /* Hide unnecessary elements */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
