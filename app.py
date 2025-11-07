@@ -17,108 +17,120 @@ load_dotenv()
 # Configure page
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
-# Minimalist CSS styling
+# Professional Dashboard CSS
 st.markdown("""
 <style>
-    /* Clean, professional font stack */
+    /* Professional font stack */
     html, body, [class*="css"] {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif !important;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif !important;
     }
 
-    /* Cleaner spacing */
-    .main .block-container {padding-top: 1.5rem;}
-    .stTabs [data-baseweb="tab-panel"] {padding-top: 1rem;}
+    /* Clean spacing */
+    .main .block-container {padding-top: 1rem; padding-bottom: 2rem;}
+    .stTabs [data-baseweb="tab-panel"] {padding-top: 1.5rem;}
 
-    /* Subtle, professional buttons */
+    /* Professional buttons */
     div.stButton > button:first-child {
-        background-color: #4A5568;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
         border: none;
-        border-radius: 4px;
+        border-radius: 6px;
+        padding: 0.5rem 1.5rem;
+        font-weight: 500;
+        transition: all 0.2s;
     }
     div.stButton > button:hover {
-        background-color: #2D3748;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
     }
 
-    /* Minimal info box - subtle border only */
+    /* Info box */
     .info-box {
-        border-left: 3px solid #CBD5E0;
-        padding: 12px 16px;
-        margin-bottom: 16px;
-        background-color: transparent;
+        background: #F0F9FF;
+        border-left: 4px solid #3B82F6;
+        padding: 14px 18px;
+        margin-bottom: 20px;
+        border-radius: 6px;
         font-size: 0.9em;
-        color: #4A5568;
+        color: #1E40AF;
     }
 
-    /* Clean reasoning box */
+    /* Reasoning box */
     .reasoning-box {
-        background-color: #F7FAFC;
-        border-left: 3px solid #4A5568;
-        padding: 12px 16px;
-        margin-bottom: 16px;
-        border-radius: 4px;
+        background: #FEFCE8;
+        border-left: 4px solid #EAB308;
+        padding: 16px 20px;
+        margin-bottom: 20px;
+        border-radius: 6px;
     }
 
     .reasoning-box h4 {
-        font-size: 0.9em;
-        color: #4A5568;
-        margin-bottom: 8px;
+        font-size: 0.95em;
+        color: #854D0E;
+        margin-bottom: 10px;
+        font-weight: 600;
     }
 
-    /* Compact references */
+    /* Professional references */
     .reference-item {
-        background-color: transparent;
-        border-left: 2px solid #E2E8F0;
-        padding: 8px 12px;
-        margin-bottom: 6px;
+        background: #F9FAFB;
+        border: 1px solid #E5E7EB;
+        border-radius: 6px;
+        padding: 12px 16px;
+        margin-bottom: 10px;
         font-size: 0.85em;
+        transition: all 0.2s;
+    }
+
+    .reference-item:hover {
+        border-color: #9CA3AF;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
 
     .reference-title {
         font-weight: 600;
-        color: #2D3748;
+        color: #111827;
         font-size: 0.9em;
+        margin-bottom: 4px;
     }
 
     .reference-url {
-        color: #4A5568;
+        color: #6366F1;
         word-break: break-all;
         font-size: 0.85em;
     }
 
-    /* Minimal thinking indicator */
-    @keyframes thinking-animation {
-        0% { opacity: 0.5; }
-        50% { opacity: 1.0; }
-        100% { opacity: 0.5; }
+    /* Activity indicator */
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
     }
 
-    .thinking-indicator {
-        animation: thinking-animation 1.5s infinite;
-        background-color: #F7FAFC;
-        border-left: 3px solid #A0AEC0;
-        padding: 12px 16px;
-        margin-bottom: 12px;
-        border-radius: 4px;
-    }
-
-    .thinking-indicator h4 {
-        font-size: 0.9em;
-        color: #4A5568;
-    }
-
-    /* Clean prospecto container */
-    .prospecto-container {
-        background-color: transparent;
-        border-left: 3px solid #CBD5E0;
-        padding: 12px 16px;
-        border-radius: 4px;
+    .activity-indicator, .thinking-indicator {
+        background: #EEF2FF;
+        border-left: 4px solid #6366F1;
+        padding: 16px 20px;
         margin-bottom: 16px;
+        border-radius: 6px;
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    .activity-indicator h4, .thinking-indicator h4 {
+        font-size: 0.9em;
+        color: #4338CA;
+        margin: 0;
+    }
+
+    /* Prospecto container */
+    .prospecto-container {
+        background: #FFFFFF;
+        border: 1px solid #E5E7EB;
+        border-radius: 8px;
+        padding: 24px;
+        margin-bottom: 20px;
         font-family: Arial, sans-serif;
-        font-size: 14px;
-        line-height: 1.5;
-        max-width: 800px;
-        white-space: pre-line;
+        line-height: 1.6;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
 
     .prospecto-title {
@@ -135,9 +147,20 @@ st.markdown("""
         font-size: 15px;
     }
 
-    /* Hide unnecessary elements */
+    /* Hide default elements */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+
+    /* Professional tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 6px 6px 0 0;
+        padding: 10px 20px;
+        font-weight: 500;
+    }
 </style>
 """, unsafe_allow_html=True)
 
