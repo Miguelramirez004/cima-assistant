@@ -17,108 +17,149 @@ load_dotenv()
 # Configure page
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
-# Custom CSS styling
+# Professional Dashboard CSS
 st.markdown("""
 <style>
-    /* Apple-style font for entire app */
+    /* Professional font stack */
     html, body, [class*="css"] {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif !important;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif !important;
     }
-    
-    .main .block-container {padding-top: 2rem;}
-    .stTabs [data-baseweb="tab-panel"] {padding-top: 1rem;}
-    div.stButton > button:first-child {background-color: #4CAF50; color: white;}
-    div.stButton > button:hover {background-color: #45a049;}
-    
-    /* Info box styling */
+
+    /* Clean spacing */
+    .main .block-container {padding-top: 1rem; padding-bottom: 2rem;}
+    .stTabs [data-baseweb="tab-panel"] {padding-top: 1.5rem;}
+
+    /* Professional buttons */
+    div.stButton > button:first-child {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 0.5rem 1.5rem;
+        font-weight: 500;
+        transition: all 0.2s;
+    }
+    div.stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    /* Info box */
     .info-box {
-        background-color: #2E7D32;
-        border-left: 6px solid #1B5E20;
-        padding: 10px;
-        margin-bottom: 10px;
-    }
-    
-    /* Reasoning box styling */
-    .reasoning-box {
-        background-color: #f8f9fa;
-        border-left: 6px solid #10a37f;
-        padding: 15px;
-        margin-bottom: 15px;
-        border-radius: 4px;
-    }
-    
-    /* References styling */
-    .reference-item {
-        background-color: #f0f2f6;
-        border-left: 4px solid #4b5f84;
-        padding: 10px;
-        margin-bottom: 8px;
-        border-radius: 4px;
+        background: #F0F9FF;
+        border-left: 4px solid #3B82F6;
+        padding: 14px 18px;
+        margin-bottom: 20px;
+        border-radius: 6px;
         font-size: 0.9em;
+        color: #1E40AF;
     }
-    
+
+    /* Reasoning box */
+    .reasoning-box {
+        background: #FEFCE8;
+        border-left: 4px solid #EAB308;
+        padding: 16px 20px;
+        margin-bottom: 20px;
+        border-radius: 6px;
+    }
+
+    .reasoning-box h4 {
+        font-size: 0.95em;
+        color: #854D0E;
+        margin-bottom: 10px;
+        font-weight: 600;
+    }
+
+    /* Professional references */
+    .reference-item {
+        background: #F9FAFB;
+        border: 1px solid #E5E7EB;
+        border-radius: 6px;
+        padding: 12px 16px;
+        margin-bottom: 10px;
+        font-size: 0.85em;
+        transition: all 0.2s;
+    }
+
+    .reference-item:hover {
+        border-color: #9CA3AF;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+
     .reference-title {
-        font-weight: bold;
-        color: #2c3e50;
+        font-weight: 600;
+        color: #111827;
+        font-size: 0.9em;
+        margin-bottom: 4px;
     }
-    
+
     .reference-url {
-        color: #3498db;
+        color: #6366F1;
         word-break: break-all;
+        font-size: 0.85em;
     }
-    
-    /* Animated thinking indicator */
-    @keyframes thinking-animation {
-        0% { opacity: 0.4; }
-        50% { opacity: 1.0; }
-        100% { opacity: 0.4; }
+
+    /* Activity indicator */
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
     }
-    
-    .thinking-indicator {
-        animation: thinking-animation 1.5s infinite;
-        background-color: #f0f2f6;
-        border-left: 6px solid #3498db;
-        padding: 15px;
-        margin-bottom: 15px;
-        border-radius: 4px;
+
+    .activity-indicator, .thinking-indicator {
+        background: #EEF2FF;
+        border-left: 4px solid #6366F1;
+        padding: 16px 20px;
+        margin-bottom: 16px;
+        border-radius: 6px;
+        animation: pulse 2s ease-in-out infinite;
     }
-    
-    /* Improved Prospecto content container */
+
+    .activity-indicator h4, .thinking-indicator h4 {
+        font-size: 0.9em;
+        color: #4338CA;
+        margin: 0;
+    }
+
+    /* Prospecto container */
     .prospecto-container {
-        background-color: white;
-        border-left: 1px solid #dddddd;
-        padding: 20px;
-        border-radius: 0;
+        background: #FFFFFF;
+        border: 1px solid #E5E7EB;
+        border-radius: 8px;
+        padding: 24px;
         margin-bottom: 20px;
         font-family: Arial, sans-serif;
-        font-size: 14px;
-        line-height: 1.5;
-        color: #333333;
-        max-width: 800px;
-        margin-left: auto;
-        margin-right: auto;
-        white-space: pre-line;
+        line-height: 1.6;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
-    
+
     .prospecto-title {
         text-align: center;
         font-weight: bold;
         margin-bottom: 15px;
         font-size: 16px;
     }
-    
+
     .prospecto-medication {
         text-align: center;
         font-weight: bold;
         margin-bottom: 20px;
         font-size: 15px;
     }
-    
-    /* Fix dash/bullet point styling */
-    .prospecto-container ul li:before {
-        content: "- ";
-        margin-left: -15px;
-        position: absolute;
+
+    /* Hide default elements */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    /* Professional tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 6px 6px 0 0;
+        padding: 10px 20px;
+        font-weight: 500;
     }
 </style>
 """, unsafe_allow_html=True)
