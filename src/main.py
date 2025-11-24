@@ -115,7 +115,7 @@ def init_resources():
     
     return formulation_agent, perplexity_client, prospecto_generator
 
-# Professional Dashboard CSS
+# Professional Compact Dashboard CSS
 st.markdown("""
 <style>
     /* Professional font stack */
@@ -123,115 +123,108 @@ st.markdown("""
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif !important;
     }
 
-    /* Clean spacing */
-    .main .block-container {padding-top: 1rem; padding-bottom: 2rem;}
-    .stTabs [data-baseweb="tab-panel"] {padding-top: 1.5rem;}
-
-    /* Professional card styling */
-    .pro-card {
-        background: #FFFFFF;
-        border: 1px solid #E5E7EB;
-        border-radius: 8px;
-        padding: 20px;
-        margin-bottom: 20px;
-        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+    /* Compact spacing - reduce vertical gaps */
+    .main .block-container {
+        padding-top: 0.75rem;
+        padding-bottom: 1rem;
+        max-width: 1400px;
     }
+    .stTabs [data-baseweb="tab-panel"] {padding-top: 0.75rem;}
 
-    /* Status panel - shows thought process */
+    /* Reduce element spacing */
+    .element-container {margin-bottom: 0.4rem;}
+
+    /* Compact status panel */
     .status-panel {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         border-radius: 8px;
-        padding: 16px;
-        margin-bottom: 20px;
+        padding: 10px 14px;
+        margin-bottom: 0.75rem;
         color: white;
-        font-size: 0.9em;
+        font-size: 0.85em;
     }
 
     .status-panel h4 {
-        margin: 0 0 12px 0;
-        font-size: 1em;
+        margin: 0 0 8px 0;
+        font-size: 0.9em;
         font-weight: 600;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
     }
 
     .status-log {
-        background: rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.15);
         border-radius: 6px;
-        padding: 12px;
-        max-height: 300px;
+        padding: 8px 10px;
+        max-height: 180px;
         overflow-y: auto;
         font-family: 'SF Mono', 'Consolas', monospace;
-        font-size: 0.85em;
+        font-size: 0.8em;
     }
 
     .status-message {
-        padding: 6px 0;
+        padding: 3px 0;
         border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         display: flex;
         align-items: flex-start;
-        gap: 8px;
+        gap: 6px;
     }
 
-    .status-message:last-child {
-        border-bottom: none;
-    }
+    .status-message:last-child {border-bottom: none;}
 
     .status-timestamp {
         color: rgba(255, 255, 255, 0.7);
-        font-size: 0.85em;
-        min-width: 60px;
+        font-size: 0.8em;
+        min-width: 50px;
     }
 
     .status-text {
         flex: 1;
-        line-height: 1.4;
+        line-height: 1.2;
     }
 
-    .status-icon {
-        margin-top: 2px;
-    }
-
-    /* Professional buttons */
+    /* Compact professional buttons */
     div.stButton > button:first-child {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
         border: none;
-        border-radius: 6px;
+        border-radius: 8px;
         padding: 0.5rem 1.5rem;
-        font-weight: 500;
+        font-weight: 600;
         transition: all 0.2s;
+        margin-top: 0.3rem;
     }
     div.stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
     }
 
-    /* Info box - professional alert style */
+    /* Compact info box */
     .info-box {
-        background: #F0F9FF;
-        border-left: 4px solid #3B82F6;
-        padding: 14px 18px;
-        margin-bottom: 20px;
+        background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
+        border-left: 4px solid #6366F1;
+        padding: 8px 12px;
+        margin: 0.4rem 0;
         border-radius: 6px;
-        font-size: 0.9em;
-        color: #1E40AF;
+        font-size: 0.85em;
+        color: #4338CA;
+        line-height: 1.3;
     }
 
-    /* Reasoning box - professional design */
+    /* Compact reasoning box */
     .reasoning-box {
-        background: #FEFCE8;
-        border-left: 4px solid #EAB308;
-        padding: 16px 20px;
-        margin-bottom: 20px;
+        background: #FFFBEB;
+        border-left: 3px solid #F59E0B;
+        padding: 8px 12px;
+        margin: 0.4rem 0;
         border-radius: 6px;
     }
 
     .reasoning-box h4 {
-        font-size: 0.95em;
-        color: #854D0E;
-        margin-bottom: 10px;
+        font-size: 0.85em;
+        color: #92400E;
+        margin: 0 0 4px 0;
         font-weight: 600;
     }
 
@@ -240,9 +233,9 @@ st.markdown("""
         background: #F9FAFB;
         border: 1px solid #E5E7EB;
         border-radius: 6px;
-        padding: 12px 16px;
-        margin-bottom: 10px;
-        font-size: 0.85em;
+        padding: 8px 12px;
+        margin-bottom: 6px;
+        font-size: 0.8em;
         transition: all 0.2s;
     }
 
@@ -254,38 +247,64 @@ st.markdown("""
     .reference-title {
         font-weight: 600;
         color: #111827;
-        font-size: 0.9em;
-        margin-bottom: 4px;
+        font-size: 0.85em;
+        margin-bottom: 2px;
     }
 
     .reference-url {
         color: #6366F1;
         word-break: break-all;
-        font-size: 0.85em;
+        font-size: 0.8em;
     }
 
-    /* Activity indicator */
+    /* Compact activity indicator */
     @keyframes pulse {
         0%, 100% { opacity: 1; }
-        50% { opacity: 0.5; }
+        50% { opacity: 0.6; }
     }
 
     .activity-indicator {
-        background: #EEF2FF;
-        border-left: 4px solid #6366F1;
-        padding: 16px 20px;
-        margin-bottom: 16px;
+        background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
+        border-left: 3px solid #6366F1;
+        padding: 8px 12px;
+        margin-bottom: 0.5rem;
         border-radius: 6px;
         animation: pulse 2s ease-in-out infinite;
     }
 
     .activity-indicator h4 {
-        font-size: 0.9em;
+        font-size: 0.85em;
         color: #4338CA;
         margin: 0;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
+    }
+
+    /* Compact text areas */
+    .stTextArea textarea {
+        border-radius: 8px;
+        border: 2px solid #E5E7EB;
+        padding: 8px;
+        font-size: 0.9em;
+    }
+
+    .stTextArea textarea:focus {
+        border-color: #6366F1;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+
+    /* Compact expander */
+    .streamlit-expanderHeader {
+        font-size: 0.85em;
+        font-weight: 500;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: #F9FAFB;
+    }
+
+    .streamlit-expanderContent {
+        padding: 6px 0;
     }
 
     /* Prospecto container */
@@ -293,38 +312,54 @@ st.markdown("""
         background: #FFFFFF;
         border: 1px solid #E5E7EB;
         border-radius: 8px;
-        padding: 24px;
-        margin-bottom: 20px;
-        font-family: Arial, sans-serif;
+        padding: 16px;
+        margin: 0.5rem 0;
         line-height: 1.6;
         box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
 
-    /* Better chat styling */
+    /* Compact chat styling */
     [data-testid="stChatMessage"] {
-        margin-bottom: 1rem;
-        padding: 1rem;
+        margin-bottom: 0.6rem;
+        padding: 0.75rem;
         border-radius: 8px;
     }
 
     /* Hide default Streamlit elements */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+    .stDeployButton {display: none;}
 
-    /* Professional tabs */
+    /* Professional compact tabs */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+        gap: 4px;
+        background: #F9FAFB;
+        padding: 4px;
+        border-radius: 8px;
     }
 
     .stTabs [data-baseweb="tab"] {
-        border-radius: 6px 6px 0 0;
-        padding: 10px 20px;
+        border-radius: 6px;
+        padding: 7px 14px;
         font-weight: 500;
+        font-size: 0.9em;
+    }
+
+    /* Compact sidebar */
+    [data-testid="stSidebar"] {
+        background: #F9FAFB;
+    }
+
+    /* Reduce column gaps */
+    .row-widget.stHorizontal {
+        gap: 0.5rem;
     }
 
     /* Success/Error messages */
     .stSuccess, .stError, .stWarning, .stInfo {
         border-radius: 6px;
+        padding: 0.6rem;
+        font-size: 0.85em;
     }
 </style>
 """, unsafe_allow_html=True)
