@@ -17,7 +17,7 @@ load_dotenv()
 # Configure page
 st.set_page_config(page_title="CIMA Assistant", layout="wide")
 
-# Professional Dashboard CSS
+# Professional Compact Dashboard CSS
 st.markdown("""
 <style>
     /* Professional font stack */
@@ -25,33 +25,41 @@ st.markdown("""
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif !important;
     }
 
-    /* Clean spacing */
-    .main .block-container {padding-top: 1rem; padding-bottom: 2rem;}
-    .stTabs [data-baseweb="tab-panel"] {padding-top: 1.5rem;}
+    /* Compact spacing */
+    .main .block-container {
+        padding-top: 0.75rem;
+        padding-bottom: 1rem;
+        max-width: 1400px;
+    }
+    .stTabs [data-baseweb="tab-panel"] {padding-top: 0.75rem;}
 
-    /* Professional buttons */
+    /* Reduce element spacing */
+    .element-container {margin-bottom: 0.4rem;}
+
+    /* Compact professional buttons */
     div.stButton > button:first-child {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
         border: none;
-        border-radius: 6px;
+        border-radius: 8px;
         padding: 0.5rem 1.5rem;
-        font-weight: 500;
+        font-weight: 600;
         transition: all 0.2s;
+        margin-top: 0.3rem;
     }
     div.stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
     }
 
-    /* Info box */
+    /* Compact info box */
     .info-box {
-        background: #F0F9FF;
-        border-left: 4px solid #3B82F6;
-        padding: 14px 18px;
-        margin-bottom: 20px;
+        background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
+        border-left: 4px solid #6366F1;
+        padding: 8px 12px;
+        margin: 0.4rem 0;
         border-radius: 6px;
-        font-size: 0.9em;
+        font-size: 0.85em;
         color: #1E40AF;
     }
 
