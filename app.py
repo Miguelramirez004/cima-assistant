@@ -15,159 +15,331 @@ from config import Config
 load_dotenv()
 
 # Configure page
-st.set_page_config(page_title="CIMA Assistant", layout="wide")
+st.set_page_config(
+    page_title="CIMA Assistant",
+    page_icon="⚕",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Professional Compact Dashboard CSS
+# Modern minimalist design system
 st.markdown("""
 <style>
-    /* Professional font stack */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    :root {
+        --accent: #0D9488;
+        --accent-soft: #F0FDFA;
+        --ink: #1E293B;
+        --ink-soft: #64748B;
+        --ink-faint: #94A3B8;
+        --line: #E2E8F0;
+        --surface: #F8FAFC;
+        --radius: 10px;
+    }
+
     html, body, [class*="css"] {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif !important;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
     }
 
-    /* Compact spacing */
+    /* Layout */
     .main .block-container {
-        padding-top: 0.75rem;
-        padding-bottom: 1rem;
-        max-width: 1400px;
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        max-width: 1200px;
     }
-    .stTabs [data-baseweb="tab-panel"] {padding-top: 0.75rem;}
+    .stTabs [data-baseweb="tab-panel"] {padding-top: 1.5rem;}
 
-    /* Reduce element spacing */
-    .element-container {margin-bottom: 0.4rem;}
+    /* Hide Streamlit chrome */
+    #MainMenu, footer, header[data-testid="stHeader"] {visibility: hidden; height: 0;}
 
-    /* Compact professional buttons */
-    div.stButton > button:first-child {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 0.5rem 1.5rem;
+    /* App header */
+    .app-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding-bottom: 1.25rem;
+        margin-bottom: 0.5rem;
+        border-bottom: 1px solid var(--line);
+    }
+    .app-logo {
+        width: 42px;
+        height: 42px;
+        border-radius: 12px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 22px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+    .app-title {
+        font-size: 1.35rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        line-height: 1.2;
+        margin: 0;
+    }
+    .app-subtitle {
+        font-size: 0.85rem;
+        color: var(--ink-soft);
+        margin: 2px 0 0 0;
+        font-weight: 400;
+    }
+
+    /* Section headings */
+    .section-title {
+        font-size: 1.05rem;
         font-weight: 600;
-        transition: all 0.2s;
-        margin-top: 0.3rem;
+        letter-spacing: -0.01em;
+        margin: 0 0 0.25rem 0;
+    }
+    .section-caption {
+        font-size: 0.85rem;
+        color: var(--ink-soft);
+        margin: 0 0 1rem 0;
+        line-height: 1.5;
+    }
+
+    /* Tabs: minimal underline style */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+        border-bottom: 1px solid var(--line);
+    }
+    .stTabs [data-baseweb="tab"] {
+        background: transparent;
+        border-radius: 8px 8px 0 0;
+        padding: 10px 16px;
+        font-weight: 500;
+        font-size: 0.9rem;
+        color: var(--ink-soft);
+    }
+    .stTabs [aria-selected="true"] {
+        color: var(--accent) !important;
+        font-weight: 600;
+    }
+    .stTabs [data-baseweb="tab-highlight"] {
+        background-color: var(--accent);
+        height: 2px;
+    }
+    .stTabs [data-baseweb="tab-border"] {display: none;}
+
+    /* Buttons */
+    div.stButton > button {
+        background: #FFFFFF;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 0.45rem 1.1rem;
+        font-weight: 500;
+        font-size: 0.85rem;
+        transition: border-color 0.15s ease, background 0.15s ease;
+        box-shadow: none;
     }
     div.stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+        border-color: var(--accent);
+        color: var(--accent);
+        background: var(--accent-soft);
+    }
+    div.stButton > button[kind="primary"] {
+        background: var(--accent);
+        color: #FFFFFF;
+        border: 1px solid var(--accent);
+        font-weight: 600;
+        padding: 0.55rem 1.5rem;
+    }
+    div.stButton > button[kind="primary"]:hover {
+        background: #0F766E;
+        border-color: #0F766E;
+        color: #FFFFFF;
     }
 
-    /* Compact info box */
+    /* Download buttons */
+    div.stDownloadButton > button {
+        background: #FFFFFF;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        font-weight: 500;
+        font-size: 0.85rem;
+    }
+    div.stDownloadButton > button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+    }
+
+    /* Inputs */
+    .stTextArea textarea, .stTextInput input {
+        border: 1px solid var(--line) !important;
+        border-radius: var(--radius) !important;
+        font-size: 0.9rem;
+    }
+    .stTextArea textarea:focus, .stTextInput input:focus {
+        border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12) !important;
+    }
+
+    /* Info box */
     .info-box {
-        background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
-        border-left: 4px solid #6366F1;
-        padding: 8px 12px;
-        margin: 0.4rem 0;
-        border-radius: 6px;
-        font-size: 0.85em;
-        color: #1E40AF;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        padding: 12px 16px;
+        margin: 0.5rem 0 1rem 0;
+        border-radius: var(--radius);
+        font-size: 0.85rem;
+        color: var(--ink-soft);
+        line-height: 1.5;
     }
 
     /* Reasoning box */
     .reasoning-box {
-        background: #FEFCE8;
-        border-left: 4px solid #EAB308;
-        padding: 16px 20px;
-        margin-bottom: 20px;
-        border-radius: 6px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--ink-faint);
+        padding: 14px 18px;
+        margin-bottom: 18px;
+        border-radius: var(--radius);
+        font-size: 0.88rem;
+        color: var(--ink-soft);
     }
-
     .reasoning-box h4 {
-        font-size: 0.95em;
-        color: #854D0E;
-        margin-bottom: 10px;
+        font-size: 0.8rem;
+        color: var(--ink);
+        margin: 0 0 8px 0;
         font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
     }
 
-    /* Professional references */
+    /* References */
     .reference-item {
-        background: #F9FAFB;
-        border: 1px solid #E5E7EB;
-        border-radius: 6px;
-        padding: 12px 16px;
-        margin-bottom: 10px;
-        font-size: 0.85em;
-        transition: all 0.2s;
+        background: #FFFFFF;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 10px 14px;
+        margin-bottom: 8px;
+        font-size: 0.83rem;
+        transition: border-color 0.15s ease;
     }
-
     .reference-item:hover {
-        border-color: #9CA3AF;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border-color: var(--accent);
     }
-
     .reference-title {
         font-weight: 600;
-        color: #111827;
-        font-size: 0.9em;
-        margin-bottom: 4px;
+        color: var(--ink);
+        font-size: 0.85rem;
     }
-
     .reference-url {
-        color: #6366F1;
+        color: var(--accent);
         word-break: break-all;
-        font-size: 0.85em;
+        font-size: 0.8rem;
+        text-decoration: none;
     }
+    .reference-url:hover {text-decoration: underline;}
 
-    /* Activity indicator */
+    /* Activity / thinking indicators */
     @keyframes pulse {
         0%, 100% { opacity: 1; }
-        50% { opacity: 0.5; }
+        50% { opacity: 0.55; }
     }
-
     .activity-indicator, .thinking-indicator {
-        background: #EEF2FF;
-        border-left: 4px solid #6366F1;
-        padding: 16px 20px;
+        background: var(--accent-soft);
+        border: 1px solid #CCFBF1;
+        padding: 14px 18px;
         margin-bottom: 16px;
-        border-radius: 6px;
+        border-radius: var(--radius);
         animation: pulse 2s ease-in-out infinite;
     }
-
     .activity-indicator h4, .thinking-indicator h4 {
-        font-size: 0.9em;
-        color: #4338CA;
+        font-size: 0.88rem;
+        color: var(--accent);
         margin: 0;
+        font-weight: 600;
+    }
+    .thinking-indicator p {
+        font-size: 0.82rem;
+        color: var(--ink-soft);
+        margin: 6px 0 0 0;
     }
 
     /* Prospecto container */
     .prospecto-container {
         background: #FFFFFF;
-        border: 1px solid #E5E7EB;
-        border-radius: 8px;
-        padding: 24px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 28px 32px;
         margin-bottom: 20px;
-        font-family: Arial, sans-serif;
-        line-height: 1.6;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        line-height: 1.65;
+        font-size: 0.9rem;
     }
-
     .prospecto-title {
         text-align: center;
-        font-weight: bold;
-        margin-bottom: 15px;
-        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 14px;
+        font-size: 1rem;
+        letter-spacing: -0.01em;
     }
-
     .prospecto-medication {
         text-align: center;
-        font-weight: bold;
+        font-weight: 600;
         margin-bottom: 20px;
-        font-size: 15px;
+        font-size: 0.95rem;
     }
 
-    /* Hide default elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-
-    /* Professional tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: var(--surface);
+        border-right: 1px solid var(--line);
+    }
+    section[data-testid="stSidebar"] .block-container {padding-top: 1.5rem;}
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3 {
+        font-size: 0.78rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--ink-soft);
+    }
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] li {
+        font-size: 0.84rem;
+        color: var(--ink-soft);
     }
 
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 6px 6px 0 0;
-        padding: 10px 20px;
+    /* Expanders */
+    div[data-testid="stExpander"] {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+    }
+    div[data-testid="stExpander"] summary {
+        font-size: 0.88rem;
         font-weight: 500;
+    }
+
+    /* Chat */
+    div[data-testid="stChatMessage"] {
+        background: transparent;
+        border-bottom: 1px solid var(--surface);
+        padding: 0.75rem 0;
+    }
+    .stChatInput textarea {
+        border-radius: var(--radius) !important;
+    }
+
+    /* Progress bar */
+    .stProgress > div > div > div > div {
+        background-color: var(--accent);
+    }
+
+    /* Alerts: flatter look */
+    div[data-testid="stAlert"] {
+        border-radius: var(--radius);
+        border: 1px solid var(--line);
+        font-size: 0.87rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -270,21 +442,30 @@ openai_client = get_openai_client()
 perplexity_client = get_perplexity_client()
 prospecto_generator = get_prospecto_generator()
     
-# Title
-st.title("🧪 CIMA Assistant")
-st.markdown("### *Sistema inteligente de consulta para formulación magistral y CIMA*")
+# Header
+st.markdown("""
+<div class="app-header">
+    <div class="app-logo">⚕</div>
+    <div>
+        <p class="app-title">CIMA Assistant</p>
+        <p class="app-subtitle">Consulta inteligente para formulación magistral y medicamentos</p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
     st.header("Información")
     st.markdown("""
     Este asistente utiliza:
-    
+
     - Base de datos CIMA para formulaciones magistrales
     - Consultas sobre medicamentos
     - Referencias a fuentes oficiales
     """)
-    
+
+    st.divider()
+
     # Add search mode setting for formulation
     st.header("Ajustes")
     use_langgraph = st.toggle("Usar búsqueda avanzada para formulación", value=st.session_state.use_langgraph)
@@ -299,7 +480,9 @@ with st.sidebar:
     if show_reasoning != st.session_state.show_reasoning:
         st.session_state.show_reasoning = show_reasoning
         st.info(f"Visualización de razonamiento: {'Activado' if show_reasoning else 'Desactivado'}")
-    
+
+    st.divider()
+
     st.header("Historial de búsquedas")
     if st.session_state.search_history:
         for query in list(st.session_state.search_history)[-5:]:
@@ -323,12 +506,10 @@ with tab1:
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        st.write("### Asistente para formulación magistral basado en CIMA")
         st.markdown("""
-        <div class="info-box">
-        Ingrese su consulta sobre formulación magistral. Especifique el principio activo, 
-        concentración deseada y tipo de formulación para obtener mejores resultados.
-        </div>
+        <p class="section-title">Formulación magistral</p>
+        <p class="section-caption">Especifique el principio activo, la concentración deseada
+        y el tipo de formulación para obtener mejores resultados.</p>
         """, unsafe_allow_html=True)
         
         # Handle query text area
@@ -340,7 +521,7 @@ with tab1:
         )
     
     with col2:
-        st.write("### Ejemplos")
+        st.markdown('<p class="section-title">Ejemplos</p>', unsafe_allow_html=True)
         example_queries = [
                 "Suspensión de Ibuprofeno 100mg/ml pediátrico",
                 "Cápsulas de Omeprazol 20mg",
@@ -355,7 +536,7 @@ with tab1:
         ]
         
         for example in example_queries:
-            if st.button(example):
+            if st.button(example, use_container_width=True):
                 st.session_state.current_query = example
                 st.rerun()
     
@@ -459,12 +640,10 @@ with tab1:
                     st.error(f"Error: {str(e)}")
 
 with tab2:
-    st.write("### Chat con experto CIMA")
     st.markdown("""
-    <div class="info-box">
-    Realice consultas sobre medicamentos.
-    Puede preguntar sobre indicaciones, contraindicaciones, dosis, efectos secundarios, etc.
-    </div>
+    <p class="section-title">Chat con experto CIMA</p>
+    <p class="section-caption">Realice consultas sobre medicamentos: indicaciones,
+    contraindicaciones, dosis, efectos secundarios y más.</p>
     """, unsafe_allow_html=True)
     
     # Example section
@@ -619,12 +798,10 @@ with tab2:
 
 # New tab for Prospectos with improved display
 with tab3:
-    st.write("### Generador de Prospectos de Medicamentos")
     st.markdown("""
-    <div class="info-box">
-    Genere prospectos completos para medicamentos según la normativa de la AEMPS.
-    Especifique el nombre del medicamento o principio activo para obtener mejores resultados.
-    </div>
+    <p class="section-title">Generador de prospectos</p>
+    <p class="section-caption">Genere prospectos completos según la normativa de la AEMPS.
+    Especifique el nombre del medicamento o principio activo.</p>
     """, unsafe_allow_html=True)
     
     # Create columns for input and examples
@@ -640,7 +817,7 @@ with tab3:
         )
     
     with col2:
-        st.write("### Ejemplos")
+        st.markdown('<p class="section-title">Ejemplos</p>', unsafe_allow_html=True)
         example_queries = [
             "Generar prospecto para Ibuprofeno 600mg",
             "Prospecto de Omeprazol 20mg",
@@ -649,7 +826,7 @@ with tab3:
         ]
         
         for example in example_queries:
-            if st.button(example, key=f"prospecto_{example}"):
+            if st.button(example, key=f"prospecto_{example}", use_container_width=True):
                 # Store in session state to preserve across reruns
                 st.session_state.current_prospecto_query = example
                 st.rerun()
@@ -751,7 +928,7 @@ with tab4:
     hist_tab1, hist_tab2, hist_tab3 = st.tabs(["Formulaciones", "Prospectos", "Consultas CIMA"])
     
     with hist_tab1:
-        st.header("Historial de formulaciones")
+        st.markdown('<p class="section-title">Historial de formulaciones</p>', unsafe_allow_html=True)
         
         if not st.session_state.formulation_history:
             st.info("No hay formulaciones en el historial")
@@ -767,7 +944,7 @@ with tab4:
                     )
     
     with hist_tab2:
-        st.header("Historial de prospectos")
+        st.markdown('<p class="section-title">Historial de prospectos</p>', unsafe_allow_html=True)
         
         if not st.session_state.prospecto_history:
             st.info("No hay prospectos en el historial")
@@ -805,7 +982,7 @@ with tab4:
                     )
                     
     with hist_tab3:
-        st.header("Historial de consultas CIMA")
+        st.markdown('<p class="section-title">Historial de consultas CIMA</p>', unsafe_allow_html=True)
         
         if not st.session_state.messages:
             st.info("No hay consultas CIMA en el historial")
