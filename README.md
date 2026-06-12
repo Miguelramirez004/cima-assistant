@@ -4,29 +4,36 @@ Sistema inteligente de consulta para formulación magistral y Centro de Informac
 
 ## Descripción
 
-CIMA Assistant es una aplicación de Streamlit que proporciona dos funcionalidades principales:
+CIMA Assistant es una aplicación de Streamlit que proporciona tres funcionalidades principales:
 
 1. **Formulación Magistral**: Genera formulaciones magistrales detalladas utilizando información de medicamentos registrados en CIMA.
-2. **Consultas CIMA**: Permite interactuar con un chatbot especializado en información de medicamentos utilizando el modelo Sonar Pro de Perplexity AI.
+2. **Consultas CIMA**: Chatbot RAG que responde sobre medicamentos usando exclusivamente la API REST oficial de CIMA (búsqueda por principio activo y búsqueda full-text por sección de ficha técnica) y GPT-4o mini para la redacción.
+3. **Prospectos**: Genera prospectos en el formato oficial de la AEMPS a partir del prospecto real registrado en CIMA.
 
-La aplicación integra la API CIMA de la AEMPS (Agencia Española de Medicamentos y Productos Sanitarios) para formulaciones magistrales y utiliza el modelo Sonar Pro de Perplexity para proporcionar respuestas precisas y contextualizadas sobre medicamentos.
+Toda la información clínica procede de la API CIMA de la AEMPS (Agencia Española de Medicamentos y Productos Sanitarios); el modelo de lenguaje solo redacta a partir de ese contexto recuperado y cita las fichas técnicas utilizadas.
 
 ## Características
 
 - **Formulación Magistral**:
   - Generación de formulaciones detalladas con estructura profesional
-  - Búsqueda inteligente en la base de datos de CIMA
+  - Búsqueda inteligente en la base de datos de CIMA, con resolución del principio
+    activo contra el catálogo oficial (`maestras`) y recuperación exacta por
+    `idpractiv1`
   - Referencias a fichas técnicas oficiales
   - Posibilidad de descargar las formulaciones como archivos Markdown
 
-- **Consultas sobre medicamentos con Perplexity Sonar Pro**:
-  - Chatbot conversacional con memoria de contexto
-  - **Visualización del proceso de razonamiento en tiempo real**
-  - **Referencias bibliográficas específicas para cada consulta**
-  - Respuestas avanzadas con capacidad de razonamiento
-  - Información actualizada y precisa sobre medicamentos
-  - Consultas sobre indicaciones, contraindicaciones, efectos adversos, etc.
-  - Explicaciones detalladas y contextualizadas
+- **Consultas CIMA (RAG sobre la API oficial)**:
+  - Grafo de recuperación tipado con Pydantic: análisis de intención →
+    resolución de principio activo → recuperación → lectura de secciones →
+    generación
+  - Detección de la sección relevante de la ficha técnica (4.1 indicaciones,
+    4.2 posología, 4.3 contraindicaciones, 4.5 interacciones, 4.8 efectos
+    adversos, etc.)
+  - Búsqueda inversa por contenido con `buscarEnFichaTecnica` (p. ej. «¿qué
+    medicamentos están indicados para la hipertensión?»)
+  - Visualización del proceso de recuperación (traza del grafo)
+  - Referencias con enlace directo a cada ficha técnica utilizada
+  - Conversación con memoria de contexto
 
 ## Instalación
 
@@ -41,12 +48,11 @@ La aplicación integra la API CIMA de la AEMPS (Agencia Española de Medicamento
    pip install -r requirements.txt
    ```
 
-3. Configure las API keys:
-   
-   Cree un archivo `.env` en el directorio raíz y añada sus API keys:
+3. Configure la API key:
+
+   Cree un archivo `.env` en el directorio raíz y añada su API key:
    ```
    OPENAI_API_KEY=su_api_key_openai
-   PERPLEXITY_API_KEY=su_api_key_perplexity
    ```
 
 ## Uso
@@ -55,10 +61,6 @@ Inicie la aplicación con Streamlit:
 ```
 streamlit run app.py
 ```
-o
-```
-streamlit run src/main.py
-```
 
 ### Formulación Magistral
 
@@ -66,46 +68,42 @@ streamlit run src/main.py
 2. Ingrese su consulta especificando:
    - Principio activo
    - Concentración deseada
-   - Tipo de formulación 
+   - Tipo de formulación
 3. Haga clic en "Consultar Formulación"
 4. Revise la formulación generada y descárguela si lo desea
 
-### Consultas CIMA con Perplexity
+### Consultas CIMA
 
 1. Seleccione la pestaña "Consultas CIMA"
 2. Escriba su consulta sobre medicamentos en el campo de chat
-3. Observe el proceso de razonamiento en tiempo real mientras la IA analiza su consulta
-4. Revise la respuesta detallada y las referencias bibliográficas proporcionadas
-5. Mantenga conversaciones con contexto para consultas más complejas
+3. Revise la respuesta, la traza de recuperación y las referencias a las fichas técnicas oficiales
 
 ### Ajustes Adicionales
 
-- **Visualización de razonamiento**: Puede activar o desactivar la visualización del proceso de razonamiento en la barra lateral
+- **Visualización de razonamiento**: Puede activar o desactivar la visualización del proceso de recuperación en la barra lateral
 - **Búsqueda avanzada**: Para las formulaciones magistrales, puede elegir entre el método de búsqueda estándar o avanzado
 
 ## Tecnologías
 
 - **Streamlit**: Framework para la interfaz de usuario
-- **OpenAI API**: Modelos de lenguaje para generación de formulaciones
-- **Perplexity Sonar Pro API**: Modelo avanzado de IA para consultas sobre medicamentos con razonamiento visible
-- **CIMA API**: API oficial de la AEMPS para consulta de medicamentos
-- **Python**: Lenguaje de programación principal
-- **aiohttp/requests**: Clientes HTTP para comunicación con APIs
+- **OpenAI API (GPT-4o mini)**: Redacción de formulaciones, prospectos y respuestas
+- **CIMA REST API**: API oficial de la AEMPS (medicamentos, maestras, buscarEnFichaTecnica, docSegmentado)
+- **Pydantic**: Estado tipado del grafo RAG y validación de resultados
+- **Python / aiohttp**: Cliente HTTP asíncrono
 
 ## Requisitos
 
 - Python 3.8 o superior
 - Conexión a Internet para acceder a las APIs
-- API key de OpenAI y Perplexity
+- API key de OpenAI
 
 ## Configuración en Streamlit Cloud
 
-Para implementar en Streamlit Cloud, agregue las siguientes secrets:
+Para implementar en Streamlit Cloud, agregue el siguiente secret:
 - OPENAI_API_KEY
-- PERPLEXITY_API_KEY
 
 ## Nota Legal
 
 Esta aplicación proporciona información con fines educativos e informativos. No reemplaza la consulta médica profesional. Todas las formulaciones magistrales deben ser revisadas por un farmacéutico cualificado antes de su elaboración.
 
-La información mostrada proviene de la API CIMA de la AEMPS y del modelo Sonar Pro de Perplexity. Esta aplicación no está afiliada oficialmente con la AEMPS ni con Perplexity AI.
+La información mostrada proviene de la API CIMA de la AEMPS. Esta aplicación no está afiliada oficialmente con la AEMPS.

@@ -7,7 +7,7 @@ import os
 from datetime import datetime  # Fixed import
 from dotenv import load_dotenv
 from formulacion import FormulationAgent
-from perplexity_client import PerplexityClient
+from cima_rag import CIMARagAgent
 from prospecto import ProspectoGenerator  # New import for ProspectoGenerator
 from config import Config
 from security import escape_html, safe_url
@@ -384,22 +384,14 @@ def get_openai_client():
         
     return AsyncOpenAI(api_key=api_key)
 
-# Global Perplexity client for CIMA consultations
+# Global CIMA RAG agent for CIMA consultations (replaces Perplexity)
 @st.cache_resource
-def get_perplexity_client():
-    """Get Perplexity client with proper API key handling"""
-    # Try to get API key from Streamlit secrets first (for cloud deployment)
-    try:
-        api_key = st.secrets["PERPLEXITY_API_KEY"]
-    except (KeyError, FileNotFoundError):
-        # Fall back to environment variables or Config
-        api_key = os.getenv("PERPLEXITY_API_KEY") or Config.PERPLEXITY_API_KEY
-    
-    if not api_key:
-        st.error("No se ha encontrado la API key de Perplexity. Verifique los secretos de Streamlit, variables de entorno o el archivo config.py")
+def get_cima_rag_agent():
+    """Get CIMA RAG agent backed by the official AEMPS REST API"""
+    openai_client = get_openai_client()
+    if not openai_client:
         return None
-        
-    return PerplexityClient(api_key=api_key)
+    return CIMARagAgent(openai_client)
 
 # Add function to initialize the ProspectoGenerator
 @st.cache_resource
@@ -440,7 +432,7 @@ if 'show_reasoning' not in st.session_state:
 
 # Silently initialize clients without showing status messages
 openai_client = get_openai_client()
-perplexity_client = get_perplexity_client()
+cima_rag_agent = get_cima_rag_agent()
 prospecto_generator = get_prospecto_generator()
     
 # Header
@@ -496,8 +488,8 @@ with st.sidebar:
         st.session_state.formulation_history = []
         st.session_state.prospecto_history = []
         st.session_state.messages = []
-        if perplexity_client:
-            perplexity_client.clear_history()
+        if cima_rag_agent:
+            cima_rag_agent.clear_history()
         st.rerun()
 
 # Main tabs - Add new Prospectos tab
@@ -720,20 +712,16 @@ with tab2:
             </div>
             """, unsafe_allow_html=True)
             
-            with st.spinner("Consultando base de conocimiento médico..."):
+            with st.spinner("Consultando CIMA (AEMPS)..."):
                 try:
-                    # Get Perplexity client
-                    perplexity_client = get_perplexity_client()
-                    if not perplexity_client:
-                        st.error("No se puede conectar con Perplexity. Verifique su API key.")
+                    # Get the CIMA RAG agent
+                    cima_rag_agent = get_cima_rag_agent()
+                    if not cima_rag_agent:
+                        st.error("No se puede conectar con OpenAI. Verifique su API key.")
                     else:
-                        # Process the request (fallback to sync method if async fails)
-                        try:
-                            response = run_async(perplexity_client.ask_cima_question_async, prompt)
-                        except Exception as async_err:
-                            # Fall back to sync method if async fails
-                            response = perplexity_client.ask_cima_question(prompt)
-                        
+                        # Run the RAG graph over the official CIMA REST API
+                        response = run_async(cima_rag_agent.ask, prompt)
+
                         # Clear the thinking animation
                         thinking_placeholder.empty()
                         
@@ -741,13 +729,6 @@ with tab2:
                         reasoning = response.get("reasoning", "")
                         answer = response.get("answer", "")
                         references = response.get("references", [])
-                        
-                        # Ensure we have a valid answer (fallback to full content if needed)
-                        if not answer and "full_content" in response:
-                            answer = response["full_content"]
-                            # Add a note about parsing issues
-                            if "full_content" in response and response["full_content"]:
-                                answer = "**Nota:** Hubo un problema al estructurar la respuesta, pero aquí está la información:\n\n" + answer
                         
                         # Show reasoning if enabled
                         if st.session_state.show_reasoning and reasoning:
@@ -795,8 +776,8 @@ with tab2:
     # Button for new conversation
     if st.button("Nueva conversación", key="new_chat"):
         st.session_state.messages = []
-        if perplexity_client:
-            perplexity_client.clear_history()
+        if cima_rag_agent:
+            cima_rag_agent.clear_history()
         st.rerun()
 
 # New tab for Prospectos with improved display
