@@ -15,6 +15,7 @@ import aiohttp
 from dataclasses import dataclass, field
 
 from config import Config
+from principle_resolver import ActivePrincipleResolver, ResolvedPrinciple
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -62,6 +63,8 @@ class MedicationQuery(BaseModel):
     is_information_request: bool = False
     information_request_type: Optional[str] = None
     exact_medication_matches: List[str] = Field(default_factory=list)  # New field for direct known medication matches
+    idpractiv1: Optional[int] = None  # Official CIMA active-principle id (resolved via maestras)
+    resolved_principle_name: Optional[str] = None  # Official catalogue name for the resolved principle
     
 class MedicationResult(BaseModel):
     """Structured representation of a medication search result."""
@@ -84,6 +87,7 @@ class MedicationSearchGraph:
     "abacavir problem" without requiring the full LangGraph dependency.
     """
     base_url: str = Config.CIMA_BASE_URL
+    principle_resolver: ActivePrincipleResolver = field(default_factory=ActivePrincipleResolver)
     active_principles: List[str] = field(default_factory=lambda: [
 "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina",
 "enalapril", "metformina", "lorazepam", "diazepam", "fluoxetina",
@@ -187,7 +191,27 @@ class MedicationSearchGraph:
             query_info = self._analyze_query(query_text)
             logger.info(f"Query analysis: Active principle: {query_info.active_principle}, Information request: {query_info.is_information_request}, Type: {query_info.information_request_type}")
             logger.info(f"Exact medication matches: {query_info.exact_medication_matches}, Uppercase names: {query_info.uppercase_names}")
-            
+
+            # Resolve the detected term(s) against the official CIMA active-principle
+            # catalogue (maestras?maestra=1). A successful resolution gives us the
+            # official idpractiv1, enabling exact-id retrieval that eliminates the
+            # fuzzy name matching (the root cause of the "abacavir problem") and
+            # removes the dependency on the hardcoded principle list: any principle
+            # in the official catalogue is recognised, not just the ~100 local ones.
+            resolution_candidates: List[str] = []
+            if query_info.active_principle:
+                resolution_candidates.append(query_info.active_principle)
+            resolution_candidates.extend(query_info.uppercase_names)
+            resolution_candidates.extend(query_info.search_terms)
+
+            resolved = await self.principle_resolver.resolve_candidates(session, resolution_candidates)
+            if resolved:
+                query_info.idpractiv1 = resolved.id
+                query_info.resolved_principle_name = resolved.nombre
+                # Use the official catalogue name for downstream scoring/gating so
+                # relevance checks compare against canonical spelling.
+                query_info.active_principle = resolved.nombre.lower()
+
             # Create query intent if this is an information request
             if query_info.is_information_request and query_info.information_request_type:
                 # Map information request types to section keys and descriptions
@@ -251,18 +275,35 @@ class MedicationSearchGraph:
                         # Convert to dictionaries for easier integration
                         return [result.dict() for result in all_results], quality, query_intent
             
+            # PRIORITY: exact retrieval by official active-principle id. This is the
+            # most reliable strategy after direct nregistro lookups: the API filters
+            # by identifier, so no alphabetical filler can leak into the results.
+            if query_info.idpractiv1 and len(all_results) < MAX_RESULTS:
+                logger.info(f"Searching by official principle id: {query_info.idpractiv1} ({query_info.resolved_principle_name})")
+                id_results = await self._search_by_principle_id(session, query_info)
+
+                for result in id_results:
+                    if result.nregistro not in seen_nregistros:
+                        all_results.append(result)
+                        seen_nregistros.add(result.nregistro)
+
+                if id_results and quality == "unknown":
+                    quality = "very_high"
+
             # For information requests: prioritize exact matches on active principle
-            if query_info.is_information_request and query_info.active_principle:
+            # (name-based fallback when the catalogue resolution did not succeed)
+            if (query_info.is_information_request and query_info.active_principle
+                    and not query_info.idpractiv1):
                 logger.info(f"Processing information request about {query_info.active_principle}")
                 info_results = await self._search_by_active_principle(session, query_info, prioritize_exact_match=True)
-                
+
                 # Add results
                 all_results.extend(info_results)
                 seen_nregistros.update([r.nregistro for r in info_results])
-                
+
                 if info_results:
                     quality = "high"
-            
+
             # Next, search for uppercase medication names like "MINOXIDIL BIORGA"
             if query_info.uppercase_names and len(all_results) < MAX_RESULTS:
                 logger.info(f"Searching for uppercase name: {query_info.uppercase_names[0]}")
@@ -278,8 +319,9 @@ class MedicationSearchGraph:
                 if uppercase_results and quality == "unknown":
                     quality = "high"
             
-            # Next, search by active principle if available
-            if len(all_results) < MAX_RESULTS and query_info.active_principle:
+            # Next, search by active principle NAME — only as fallback when the
+            # official catalogue resolution did not yield an id.
+            if len(all_results) < MAX_RESULTS and query_info.active_principle and not query_info.idpractiv1:
                 logger.info(f"Searching by active principle: {query_info.active_principle}")
                 ap_results = await self._search_by_active_principle(session, query_info)
                 
@@ -325,22 +367,17 @@ class MedicationSearchGraph:
             
             # Filter results with low relevance scores
             filtered_results = [r for r in all_results if r.relevance_score >= MIN_RELEVANCE_THRESHOLD]
-            
-            # IMPROVED FILTERING: Apply additional filtering to prevent the "abacavir problem"
-            if filtered_results:
-                # Check if there are results that don't start with 'A' - if so, remove all 'A' results
-                # This is a simple but effective way to prevent the abacavir problem
-                non_a_results = [r for r in filtered_results if not r.nombre.lower().startswith('a')]
-                
-                if len(non_a_results) >= 1:
-                    # If we have at least one non-A result, check if the A results are relevant
-                    top_score = max(r.relevance_score for r in non_a_results)
-                    
-                    # Keep A results only if they score close to the top non-A result
-                    filtered_results = [r for r in filtered_results if 
-                                       not r.nombre.lower().startswith('a') or 
-                                       r.relevance_score >= top_score - 20]
-            
+
+            # Content-match gate: keep only results that genuinely match the query
+            # (active principle, term or brand). This solves the "abacavir problem"
+            # (irrelevant alphabetical fillers passing the score threshold) for every
+            # letter, instead of the old alphabetical 'A' penalty that wrongly
+            # punished legitimate A-drugs. If nothing passes the gate (e.g. very
+            # broad queries) we fall back to the score-filtered list.
+            gated_results = [r for r in filtered_results if self._has_content_match(r, query_info)]
+            if gated_results:
+                filtered_results = gated_results
+
             # Limit to maximum results
             filtered_results = filtered_results[:MAX_RESULTS]
             
@@ -557,6 +594,97 @@ class MedicationSearchGraph:
         
         return results
     
+    async def _lookup_by_nregistro(self, session: aiohttp.ClientSession, nregistro: str,
+                                   relevance_score: int = 130) -> List[MedicationResult]:
+        """
+        Resolve a medication by its registration number via the real CIMA API.
+
+        Used instead of fabricating MedicationResult objects locally, so that the
+        name, active principles and marketing-authorisation holder always reflect
+        the official CIMA data rather than a hardcoded (and possibly wrong) value.
+        Returns [] if the API does not return a usable record.
+        """
+        medication_url = f"{self.base_url}/medicamento"
+        try:
+            async with session.get(medication_url, params={"nregistro": nregistro}) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if isinstance(data, dict) and data.get("nregistro") and data.get("nombre"):
+                        result = MedicationResult(**data)
+                        result.relevance_score = relevance_score
+                        return [result]
+                    logger.warning(f"Lookup for nregistro {nregistro} returned unexpected data")
+                else:
+                    logger.warning(f"Lookup for nregistro {nregistro} failed with status {response.status}")
+        except Exception as e:
+            logger.error(f"Error looking up nregistro {nregistro}: {str(e)}")
+        return []
+
+    async def _search_by_principle_id(self, session: aiohttp.ClientSession,
+                                      query: MedicationQuery) -> List[MedicationResult]:
+        """
+        Exact retrieval by official active-principle id (idpractiv1), as documented
+        in the CIMA REST API ("GET medicamentos?{condiciones}"). The API itself
+        guarantees every result contains the principle, so no alphabetical filler
+        can appear; scoring is only used to order presentations.
+        """
+        if not query.idpractiv1:
+            return []
+
+        search_url = f"{self.base_url}/medicamentos"
+        params = {"idpractiv1": str(query.idpractiv1), "pagina": "1"}
+        headers = {"Accept": "application/json"}
+        results: List[MedicationResult] = []
+        seen: Set[str] = set()
+
+        try:
+            async with session.get(search_url, params=params, headers=headers) as response:
+                if response.status != 200:
+                    logger.warning(f"idpractiv1 search returned status {response.status}")
+                    return []
+                data = await response.json()
+        except Exception as e:
+            logger.error(f"Error in idpractiv1 search: {str(e)}")
+            return []
+
+        if not isinstance(data, dict) or not data.get("resultados"):
+            return []
+
+        for med in data["resultados"]:
+            if not isinstance(med, dict) or med.get("nregistro") in seen:
+                continue
+            try:
+                result = MedicationResult(**med)
+            except Exception as e:
+                logger.warning(f"Skipping malformed idpractiv1 result: {str(e)}")
+                continue
+
+            # Base score reflects the exact-id provenance; bonuses order the list
+            # by how well each presentation matches the rest of the query.
+            score = 110
+            name_lower = (result.nombre or "").lower()
+            # Compare concentrations ignoring spacing ("250mg/5ml" vs "250 mg/5 ml")
+            if query.concentration:
+                conc_compact = query.concentration.lower().replace(" ", "")
+                if conc_compact in name_lower.replace(" ", ""):
+                    score += 30
+            if query.formulation_type:
+                keywords = Config.FORMULATION_TYPES.get(query.formulation_type, [])
+                if any(keyword in name_lower for keyword in keywords):
+                    score += 20
+            if result.comerc:
+                score += 20
+
+            result.relevance_score = score
+            results.append(result)
+            seen.add(result.nregistro)
+
+            if len(results) >= MAX_RESULTS * 2:  # Keep a buffer before final sort
+                break
+
+        results.sort(key=lambda x: x.relevance_score, reverse=True)
+        return results[:MAX_RESULTS]
+
     async def _search_by_uppercase(self, session: aiohttp.ClientSession, query: MedicationQuery) -> List[MedicationResult]:
         """IMPROVED! Search for exact matches with uppercase medication names."""
         if not query.uppercase_names:
@@ -632,21 +760,17 @@ class MedicationSearchGraph:
         
         try:
             active_principle = query.active_principle
-            
-            # Special case handling for Minoxidil Biorga
+
+            # Special case handling for Minoxidil Biorga: resolve via the real CIMA
+            # API instead of fabricating name/lab/nregistro locally. Returning
+            # hardcoded medical data is unsafe (it may be wrong and is presented
+            # authoritatively); if the lookup fails we fall through to normal search.
             if "minoxidil" in active_principle.lower() or "biorga" in active_principle.lower():
-                logger.info(f"Special case handling for minoxidil/biorga")
-                # Create a direct result for Minoxidil Biorga
-                special_result = MedicationResult(
-                    nregistro="78929",
-                    nombre="MINOXIDIL BIORGA 50 mg/ml SOLUCION CUTANEA",
-                    pactivos="Minoxidil",
-                    labtitular="JOHNSON & JOHNSON S.A.",
-                    comerc=True,
-                    relevance_score=150
-                )
-                return [special_result]
-            
+                logger.info("Special case: resolving minoxidil/biorga via CIMA API")
+                api_results = await self._lookup_by_nregistro(session, "78929", relevance_score=150)
+                if api_results:
+                    return api_results
+
             # Try variations of the active principle for better results
             variations = [
                 active_principle,
@@ -662,21 +786,18 @@ class MedicationSearchGraph:
             for variation in variations:
                 if len(results) >= MAX_RESULTS:
                     break
-                    
-                # Try different search parameters
+
+                # "practiv1" is the documented parameter for active-principle name
+                # search (CIMA REST API v1.23); the previously used
+                # "principiosActivos" does not exist in the API.
                 search_params = [
-                    {"principiosActivos": variation, "desc": "principiosActivos"},
                     {"practiv1": variation, "desc": "practiv1"}
                 ]
-                
+
                 for params_dict in search_params:
                     desc = params_dict["desc"]
-                    params = {}
-                    if desc == "principiosActivos":
-                        params["principiosActivos"] = variation
-                    else:
-                        params["practiv1"] = variation
-                    
+                    params = {"practiv1": variation, "pagina": "1"}
+
                     try:
                         logger.info(f"Trying active principle search with {desc} approach: {params}")
                         async with session.get(search_url, params=params) as response:
@@ -704,13 +825,7 @@ class MedicationSearchGraph:
                                                 if prioritize_exact_match and query.is_information_request:
                                                     if result.pactivos and active_principle.lower() in result.pactivos.lower():
                                                         result.relevance_score += 50
-                                                
-                                                # Penalize results starting with 'A' that don't contain active principle
-                                                if (result.nombre.lower().startswith('a') and 
-                                                    (not result.pactivos or active_principle.lower() not in result.pactivos.lower()) and
-                                                    active_principle.lower() not in result.nombre.lower()):
-                                                    result.relevance_score -= 30
-                                                
+
                                                 # Only add if above threshold
                                                 if result.relevance_score >= MIN_RELEVANCE_THRESHOLD:
                                                     results.append(result)
@@ -720,19 +835,12 @@ class MedicationSearchGraph:
                     except Exception as e:
                         logger.error(f"Error in active principle search with {desc} approach: {str(e)}")
             
-            # Special handling for certain active principles
+            # Special handling for minoxidil: if nothing matched, resolve via the
+            # real CIMA API rather than fabricating a result.
             if "minoxidil" in active_principle.lower() and not results:
-                # Fallback for minoxidil - create a result
-                minoxidil_result = MedicationResult(
-                    nregistro="78929",
-                    nombre="MINOXIDIL BIORGA 50 mg/ml SOLUCION CUTANEA",
-                    pactivos="Minoxidil",
-                    labtitular="JOHNSON & JOHNSON S.A.",
-                    comerc=True,
-                    relevance_score=130
-                )
-                results.append(minoxidil_result)
-            
+                api_results = await self._lookup_by_nregistro(session, "78929", relevance_score=130)
+                results.extend(api_results)
+
             # Sort by relevance score
             results.sort(key=lambda x: x.relevance_score, reverse=True)
             return results
@@ -790,44 +898,20 @@ class MedicationSearchGraph:
                                                 information_request=query.is_information_request
                                             )
                                             
-                                            # CRITICAL: Special filtering for the abacavir problem
-                                            # If result starts with 'A' and doesn't seem relevant, reduce score drastically
-                                            if result.nombre.lower().startswith('a'):
-                                                # Check if this is likely a relevant result or just alphabetical ordering
-                                                # Is the query specifically about something starting with A?
-                                                a_relevant = False
-                                                if query.active_principle and query.active_principle.lower().startswith('a'):
-                                                    a_relevant = True
-                                                elif any(term.lower().startswith('a') for term in query.search_terms):
-                                                    a_relevant = True
-                                                
-                                                if not a_relevant:
-                                                    # Apply extreme penalty for A-starting items in generic searches
-                                                    result.relevance_score -= 50
-                                            
-                                            # Only add if above minimum relevance threshold
-                                            if result.relevance_score >= MIN_RELEVANCE_THRESHOLD:
+                                            # Only add if it genuinely matches the query
+                                            # by content and clears the score threshold.
+                                            if (result.relevance_score >= MIN_RELEVANCE_THRESHOLD
+                                                    and self._has_content_match(result, query)):
                                                 results.append(result)
                                                 seen_nregistros.add(med.get("nregistro"))
                             except Exception as e:
                                 logger.error(f"Error parsing name search results: {str(e)}")
                 except Exception as e:
                     logger.error(f"Error in name search for variation {var}: {str(e)}")
-            
+
             # Sort by relevance score
             results.sort(key=lambda x: x.relevance_score, reverse=True)
-            
-            # Additional filtering to exclude irrelevant alphabetical results - core abacavir problem fix
-            if len(results) > 0:
-                # Find the highest scoring result
-                max_score = max(r.relevance_score for r in results)
-                
-                # Filter out low-scoring 'A' results - stricter filtering for 'A' results
-                filtered_results = [r for r in results if not r.nombre.lower().startswith('a') or r.relevance_score >= max_score - 20]
-                
-                # Return filtered results
-                return filtered_results[:MAX_RESULTS]
-            
+
             # Limit to max results
             return results[:MAX_RESULTS]
         except Exception as e:
@@ -892,24 +976,11 @@ class MedicationSearchGraph:
                                                 information_request=query.is_information_request
                                             )
                                             
-                                            # Extra severe penalty for 'A' results in term searches
-                                            # This is critical for solving the abacavir problem
-                                            if result.nombre.lower().startswith('a'):
-                                                # Check if this seems like a relevant A result
-                                                term_in_name = term.lower() in result.nombre.lower()
-                                                relevant_a = False
-                                                
-                                                if term.lower().startswith('a') and term_in_name:
-                                                    relevant_a = True
-                                                elif query.active_principle and query.active_principle.lower().startswith('a'):
-                                                    relevant_a = True
-                                                
-                                                # If not relevant, apply extreme penalty
-                                                if not relevant_a:
-                                                    result.relevance_score -= 75
-                                            
-                                            # Higher threshold for term searches
-                                            if result.relevance_score >= MIN_RELEVANCE_THRESHOLD + 10:
+                                            # Higher threshold for term searches, and
+                                            # require a genuine content match (replaces
+                                            # the old alphabetical 'A' penalty).
+                                            if (result.relevance_score >= MIN_RELEVANCE_THRESHOLD + 10
+                                                    and self._has_content_match(result, query)):
                                                 results.append(result)
                                                 seen_nregistros.add(med.get("nregistro"))
                             except Exception as e:
@@ -919,24 +990,48 @@ class MedicationSearchGraph:
             
             # Sort by relevance score
             results.sort(key=lambda x: x.relevance_score, reverse=True)
-            
-            # Apply additional filtering for the abacavir problem
-            if results:
-                # Check if there are any non-A results
-                non_a_results = [r for r in results if not r.nombre.lower().startswith('a')]
-                if non_a_results:
-                    # If we have non-A results, filter out all A results with low scores
-                    highest_non_a_score = max(r.relevance_score for r in non_a_results)
-                    results = [r for r in results if 
-                               not r.nombre.lower().startswith('a') or 
-                               r.relevance_score >= highest_non_a_score - 10]
-            
+
             return results[:MAX_RESULTS]
         except Exception as e:
             logger.error(f"Error in term search: {str(e)}")
             return []
     
-    def _calculate_relevance(self, med: MedicationResult, active_principle: Optional[str] = None, 
+    def _has_content_match(self, med: MedicationResult, query: MedicationQuery) -> bool:
+        """
+        Whether a result genuinely matches the query by content (active principle,
+        search term or uppercase brand appearing in the name or active principles).
+
+        This replaces the old "penalise everything starting with 'A'" heuristic used
+        to work around the "abacavir problem". That heuristic was wrong: it punished
+        legitimate drugs (amoxicilina, atorvastatina, aspirina, azitromicina,
+        amlodipino, alprazolam, ...). Requiring a real content match fixes the
+        irrelevant-alphabetical-result problem for ALL letters without bias.
+        """
+        name = (med.nombre or "").lower()
+        pact = (med.pactivos or "").lower()
+
+        # Results retrieved via the official idpractiv1 filter are relevant by
+        # construction (the API guarantees the principle); when the list payload
+        # omits pactivos we must not refute that guarantee here.
+        if query.idpractiv1 and not pact:
+            return True
+
+        ap = (query.active_principle or "").lower()
+        if ap and (ap in name or ap in pact):
+            return True
+
+        for term in (query.search_terms or []):
+            t = term.lower()
+            if len(t) >= 4 and (t in name or t in pact):
+                return True
+
+        for up in (query.uppercase_names or []):
+            if any(len(w) >= 3 and w.lower() in name for w in up.split()):
+                return True
+
+        return False
+
+    def _calculate_relevance(self, med: MedicationResult, active_principle: Optional[str] = None,
                              concentration: Optional[str] = None, query_terms: Optional[List[str]] = None, 
                              formulation_type: Optional[str] = None, information_request: bool = False) -> int:
         """IMPROVED! Calculate medication relevance score with better filtering for the abacavir problem."""
@@ -947,22 +1042,14 @@ class MedicationSearchGraph:
             return 0
         
         med_name_lower = med.nombre.lower()
-        
-        # CRITICAL: Primary check for abacavir-type results
-        # If name starts with 'A' and there's no clear relevance to query, apply initial penalty
-        if med_name_lower.startswith('a'):
-            score -= 10  # Start with a penalty for 'A' results
-        
+
         # Check active principle match - highest priority
         if active_principle and med.pactivos:
             pactivos_lower = med.pactivos.lower()
-            
+
             # Full match in active principles - most important factor
             if active_principle.lower() in pactivos_lower:
                 score += 100
-                # For 'A' results, remove initial penalty if active principle matches
-                if med_name_lower.startswith('a'):
-                    score += 10  # Counteract the initial penalty
             # Active principle appears in name
             elif active_principle.lower() in med_name_lower:
                 score += 50
@@ -1000,18 +1087,7 @@ class MedicationSearchGraph:
         # Special case handling for minoxidil/biorga
         if ("minoxidil" in med_name_lower or "biorga" in med_name_lower) and med.nregistro == "78929":
             score += 50  # Big boost for this specific product
-        
-        # CRITICAL: More aggressive additional check for abacavir-type results
-        # This is where we identify and penalize irrelevant alphabetical results
-        if med_name_lower.startswith('a'):
-            # If it's an 'A' result with no matching terms, active principles, or clear relevance
-            # it's likely just an alphabetical result - apply severe penalty
-            if (not active_principle or (active_principle and active_principle.lower() not in med_name_lower and 
-                                         (not med.pactivos or active_principle.lower() not in med.pactivos.lower()))) and \
-               (not query_terms or not any(term.lower() in med_name_lower for term in query_terms)):
-                # Apply a stronger penalty for likely irrelevant alphabetical results
-                score -= 50
-        
+
         return score
     
     def _extract_search_terms(self, query: str) -> List[str]:

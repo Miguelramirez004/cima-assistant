@@ -10,6 +10,7 @@ from formulacion import FormulationAgent
 from perplexity_client import PerplexityClient
 from prospecto import ProspectoGenerator  # New import for ProspectoGenerator
 from config import Config
+from security import escape_html, safe_url
 
 # Load environment variables (for local development)
 load_dotenv()
@@ -673,7 +674,7 @@ with tab2:
                         <h4>💭 Proceso de Razonamiento</h4>
                         {reasoning}
                         </div>
-                        """.format(reasoning=message["reasoning"]), unsafe_allow_html=True)
+                        """.format(reasoning=escape_html(message["reasoning"])), unsafe_allow_html=True)
                     
                     # Show main answer
                     st.markdown(message["content"])
@@ -682,12 +683,13 @@ with tab2:
                     if message["references"] and len(message["references"]) > 0:
                         st.markdown("<h4>📚 Referencias</h4>", unsafe_allow_html=True)
                         for ref in message["references"]:
-                            title = ref.get("title", "")
-                            url = ref.get("url", "")
-                            if url:
+                            title = escape_html(ref.get("title", ""))
+                            raw_url = ref.get("url", "")
+                            if raw_url:
+                                url = safe_url(raw_url)
                                 st.markdown(f"""<div class="reference-item">
                                 <span class="reference-title">{title}</span><br>
-                                <a href="{url}" target="_blank" class="reference-url">{url}</a>
+                                <a href="{url}" target="_blank" rel="noopener noreferrer" class="reference-url">{url}</a>
                                 </div>""", unsafe_allow_html=True)
                             else:
                                 st.markdown(f"""<div class="reference-item">
@@ -753,7 +755,7 @@ with tab2:
                             <h4>💭 Proceso de Razonamiento</h4>
                             {reasoning}
                             </div>
-                            """.format(reasoning=reasoning), unsafe_allow_html=True)
+                            """.format(reasoning=escape_html(reasoning)), unsafe_allow_html=True)
                         
                         # Show the main answer
                         st.markdown(answer)
@@ -762,12 +764,13 @@ with tab2:
                         if references and len(references) > 0:
                             st.markdown("<h4>📚 Referencias</h4>", unsafe_allow_html=True)
                             for ref in references:
-                                title = ref.get("title", "")
-                                url = ref.get("url", "")
-                                if url:
+                                title = escape_html(ref.get("title", ""))
+                                raw_url = ref.get("url", "")
+                                if raw_url:
+                                    url = safe_url(raw_url)
                                     st.markdown(f"""<div class="reference-item">
                                     <span class="reference-title">{title}</span><br>
-                                    <a href="{url}" target="_blank" class="reference-url">{url}</a>
+                                    <a href="{url}" target="_blank" rel="noopener noreferrer" class="reference-url">{url}</a>
                                     </div>""", unsafe_allow_html=True)
                                 else:
                                     st.markdown(f"""<div class="reference-item">
@@ -892,13 +895,16 @@ with tab3:
                     clean_prospecto = re.sub(r'```[a-zA-Z]*', '', clean_prospecto)
                     clean_prospecto = clean_prospecto.replace('```', '')
                     
-                    # Use improved container styling for AEMPS format
+                    # Use improved container styling for AEMPS format.
+                    # SECURITY: el prospecto lo genera el LLM y puede reflejar la
+                    # consulta del usuario o contenido de CIMA; se escapa antes de
+                    # llegar al sink unsafe_allow_html para evitar XSS almacenado.
                     st.markdown(f"""
                     <div class="prospecto-container">
-                    {clean_prospecto}
+                    {escape_html(clean_prospecto)}
                     </div>
                     """, unsafe_allow_html=True)
-                    
+
                     # Option to download
                     prospecto_text = f"""PROSPECTO: INFORMACIÓN PARA EL USUARIO
 
@@ -967,13 +973,14 @@ with tab4:
                     clean_prospecto = re.sub(r'```[a-zA-Z]*', '', clean_prospecto)
                     clean_prospecto = clean_prospecto.replace('```', '')
                     
-                    # Use improved container styling for AEMPS format
+                    # Use improved container styling for AEMPS format.
+                    # SECURITY: escapar el contenido generado antes del sink HTML.
                     st.markdown(f"""
                     <div class="prospecto-container">
-                    {clean_prospecto}
+                    {escape_html(clean_prospecto)}
                     </div>
                     """, unsafe_allow_html=True)
-                    
+
                     st.download_button(
                         label="Descargar",
                         data=f"""PROSPECTO: INFORMACIÓN PARA EL USUARIO\n\n{clean_prospecto}\n\n---\nGenerado para: {medication_name}\nFecha de generación: {datetime.now().strftime("%d/%m/%Y")}""",
