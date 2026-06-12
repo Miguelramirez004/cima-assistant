@@ -15,6 +15,7 @@ import aiohttp
 from dataclasses import dataclass, field
 
 from config import Config
+from principle_resolver import ActivePrincipleResolver, ResolvedPrinciple
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -62,6 +63,8 @@ class MedicationQuery(BaseModel):
     is_information_request: bool = False
     information_request_type: Optional[str] = None
     exact_medication_matches: List[str] = Field(default_factory=list)  # New field for direct known medication matches
+    idpractiv1: Optional[int] = None  # Official CIMA active-principle id (resolved via maestras)
+    resolved_principle_name: Optional[str] = None  # Official catalogue name for the resolved principle
     
 class MedicationResult(BaseModel):
     """Structured representation of a medication search result."""
@@ -84,6 +87,7 @@ class MedicationSearchGraph:
     "abacavir problem" without requiring the full LangGraph dependency.
     """
     base_url: str = Config.CIMA_BASE_URL
+    principle_resolver: ActivePrincipleResolver = field(default_factory=ActivePrincipleResolver)
     active_principles: List[str] = field(default_factory=lambda: [
 "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina",
 "enalapril", "metformina", "lorazepam", "diazepam", "fluoxetina",
@@ -187,7 +191,27 @@ class MedicationSearchGraph:
             query_info = self._analyze_query(query_text)
             logger.info(f"Query analysis: Active principle: {query_info.active_principle}, Information request: {query_info.is_information_request}, Type: {query_info.information_request_type}")
             logger.info(f"Exact medication matches: {query_info.exact_medication_matches}, Uppercase names: {query_info.uppercase_names}")
-            
+
+            # Resolve the detected term(s) against the official CIMA active-principle
+            # catalogue (maestras?maestra=1). A successful resolution gives us the
+            # official idpractiv1, enabling exact-id retrieval that eliminates the
+            # fuzzy name matching (the root cause of the "abacavir problem") and
+            # removes the dependency on the hardcoded principle list: any principle
+            # in the official catalogue is recognised, not just the ~100 local ones.
+            resolution_candidates: List[str] = []
+            if query_info.active_principle:
+                resolution_candidates.append(query_info.active_principle)
+            resolution_candidates.extend(query_info.uppercase_names)
+            resolution_candidates.extend(query_info.search_terms)
+
+            resolved = await self.principle_resolver.resolve_candidates(session, resolution_candidates)
+            if resolved:
+                query_info.idpractiv1 = resolved.id
+                query_info.resolved_principle_name = resolved.nombre
+                # Use the official catalogue name for downstream scoring/gating so
+                # relevance checks compare against canonical spelling.
+                query_info.active_principle = resolved.nombre.lower()
+
             # Create query intent if this is an information request
             if query_info.is_information_request and query_info.information_request_type:
                 # Map information request types to section keys and descriptions
@@ -251,18 +275,35 @@ class MedicationSearchGraph:
                         # Convert to dictionaries for easier integration
                         return [result.dict() for result in all_results], quality, query_intent
             
+            # PRIORITY: exact retrieval by official active-principle id. This is the
+            # most reliable strategy after direct nregistro lookups: the API filters
+            # by identifier, so no alphabetical filler can leak into the results.
+            if query_info.idpractiv1 and len(all_results) < MAX_RESULTS:
+                logger.info(f"Searching by official principle id: {query_info.idpractiv1} ({query_info.resolved_principle_name})")
+                id_results = await self._search_by_principle_id(session, query_info)
+
+                for result in id_results:
+                    if result.nregistro not in seen_nregistros:
+                        all_results.append(result)
+                        seen_nregistros.add(result.nregistro)
+
+                if id_results and quality == "unknown":
+                    quality = "very_high"
+
             # For information requests: prioritize exact matches on active principle
-            if query_info.is_information_request and query_info.active_principle:
+            # (name-based fallback when the catalogue resolution did not succeed)
+            if (query_info.is_information_request and query_info.active_principle
+                    and not query_info.idpractiv1):
                 logger.info(f"Processing information request about {query_info.active_principle}")
                 info_results = await self._search_by_active_principle(session, query_info, prioritize_exact_match=True)
-                
+
                 # Add results
                 all_results.extend(info_results)
                 seen_nregistros.update([r.nregistro for r in info_results])
-                
+
                 if info_results:
                     quality = "high"
-            
+
             # Next, search for uppercase medication names like "MINOXIDIL BIORGA"
             if query_info.uppercase_names and len(all_results) < MAX_RESULTS:
                 logger.info(f"Searching for uppercase name: {query_info.uppercase_names[0]}")
@@ -278,8 +319,9 @@ class MedicationSearchGraph:
                 if uppercase_results and quality == "unknown":
                     quality = "high"
             
-            # Next, search by active principle if available
-            if len(all_results) < MAX_RESULTS and query_info.active_principle:
+            # Next, search by active principle NAME — only as fallback when the
+            # official catalogue resolution did not yield an id.
+            if len(all_results) < MAX_RESULTS and query_info.active_principle and not query_info.idpractiv1:
                 logger.info(f"Searching by active principle: {query_info.active_principle}")
                 ap_results = await self._search_by_active_principle(session, query_info)
                 
@@ -578,6 +620,71 @@ class MedicationSearchGraph:
             logger.error(f"Error looking up nregistro {nregistro}: {str(e)}")
         return []
 
+    async def _search_by_principle_id(self, session: aiohttp.ClientSession,
+                                      query: MedicationQuery) -> List[MedicationResult]:
+        """
+        Exact retrieval by official active-principle id (idpractiv1), as documented
+        in the CIMA REST API ("GET medicamentos?{condiciones}"). The API itself
+        guarantees every result contains the principle, so no alphabetical filler
+        can appear; scoring is only used to order presentations.
+        """
+        if not query.idpractiv1:
+            return []
+
+        search_url = f"{self.base_url}/medicamentos"
+        params = {"idpractiv1": str(query.idpractiv1), "pagina": "1"}
+        headers = {"Accept": "application/json"}
+        results: List[MedicationResult] = []
+        seen: Set[str] = set()
+
+        try:
+            async with session.get(search_url, params=params, headers=headers) as response:
+                if response.status != 200:
+                    logger.warning(f"idpractiv1 search returned status {response.status}")
+                    return []
+                data = await response.json()
+        except Exception as e:
+            logger.error(f"Error in idpractiv1 search: {str(e)}")
+            return []
+
+        if not isinstance(data, dict) or not data.get("resultados"):
+            return []
+
+        for med in data["resultados"]:
+            if not isinstance(med, dict) or med.get("nregistro") in seen:
+                continue
+            try:
+                result = MedicationResult(**med)
+            except Exception as e:
+                logger.warning(f"Skipping malformed idpractiv1 result: {str(e)}")
+                continue
+
+            # Base score reflects the exact-id provenance; bonuses order the list
+            # by how well each presentation matches the rest of the query.
+            score = 110
+            name_lower = (result.nombre or "").lower()
+            # Compare concentrations ignoring spacing ("250mg/5ml" vs "250 mg/5 ml")
+            if query.concentration:
+                conc_compact = query.concentration.lower().replace(" ", "")
+                if conc_compact in name_lower.replace(" ", ""):
+                    score += 30
+            if query.formulation_type:
+                keywords = Config.FORMULATION_TYPES.get(query.formulation_type, [])
+                if any(keyword in name_lower for keyword in keywords):
+                    score += 20
+            if result.comerc:
+                score += 20
+
+            result.relevance_score = score
+            results.append(result)
+            seen.add(result.nregistro)
+
+            if len(results) >= MAX_RESULTS * 2:  # Keep a buffer before final sort
+                break
+
+        results.sort(key=lambda x: x.relevance_score, reverse=True)
+        return results[:MAX_RESULTS]
+
     async def _search_by_uppercase(self, session: aiohttp.ClientSession, query: MedicationQuery) -> List[MedicationResult]:
         """IMPROVED! Search for exact matches with uppercase medication names."""
         if not query.uppercase_names:
@@ -679,21 +786,18 @@ class MedicationSearchGraph:
             for variation in variations:
                 if len(results) >= MAX_RESULTS:
                     break
-                    
-                # Try different search parameters
+
+                # "practiv1" is the documented parameter for active-principle name
+                # search (CIMA REST API v1.23); the previously used
+                # "principiosActivos" does not exist in the API.
                 search_params = [
-                    {"principiosActivos": variation, "desc": "principiosActivos"},
                     {"practiv1": variation, "desc": "practiv1"}
                 ]
-                
+
                 for params_dict in search_params:
                     desc = params_dict["desc"]
-                    params = {}
-                    if desc == "principiosActivos":
-                        params["principiosActivos"] = variation
-                    else:
-                        params["practiv1"] = variation
-                    
+                    params = {"practiv1": variation, "pagina": "1"}
+
                     try:
                         logger.info(f"Trying active principle search with {desc} approach: {params}")
                         async with session.get(search_url, params=params) as response:
@@ -905,6 +1009,12 @@ class MedicationSearchGraph:
         """
         name = (med.nombre or "").lower()
         pact = (med.pactivos or "").lower()
+
+        # Results retrieved via the official idpractiv1 filter are relevant by
+        # construction (the API guarantees the principle); when the list payload
+        # omits pactivos we must not refute that guarantee here.
+        if query.idpractiv1 and not pact:
+            return True
 
         ap = (query.active_principle or "").lower()
         if ap and (ap in name or ap in pact):
