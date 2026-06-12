@@ -73,7 +73,12 @@ IMPORTANTE: No uses ningún tipo de formato que pueda causar problemas en la vis
         self.max_tokens = 14000
         self.use_langgraph = True
         # Initialize tokenizer
-        self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        try:
+            self.tokenizer = tiktoken.encoding_for_model(Config.CHAT_MODEL)
+        except KeyError:
+            # Older tiktoken versions may not know gpt-4o-mini; cl100k_base is a
+            # close-enough approximation for token counting purposes.
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
         # Active principle database - Spanish
         self.active_principles = [
            "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina",

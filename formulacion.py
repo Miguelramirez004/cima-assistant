@@ -119,7 +119,12 @@ Utiliza un lenguaje preciso pero accesible, recordando que la persona que consul
         self.max_tokens = 14000
         self.use_langgraph = True  # Default to using improved search
         # Initialize tokenizer
-        self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        try:
+            self.tokenizer = tiktoken.encoding_for_model(Config.CHAT_MODEL)
+        except KeyError:
+            # Older tiktoken versions may not know gpt-4o-mini; cl100k_base is a
+            # close-enough approximation for token counting purposes.
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
         # Active principle database - Spanish
         self.active_principles = [
            "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina",
@@ -1280,7 +1285,12 @@ Utiliza un lenguaje preciso pero accesible, recordando que tu respuesta puede se
         self.max_tokens = 14000
         self.use_langgraph = True
         # Initialize tokenizer
-        self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        try:
+            self.tokenizer = tiktoken.encoding_for_model(Config.CHAT_MODEL)
+        except KeyError:
+            # Older tiktoken versions may not know gpt-4o-mini; cl100k_base is a
+            # close-enough approximation for token counting purposes.
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
         # Active principle database - Spanish
         self.active_principles = [
             "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina", 
