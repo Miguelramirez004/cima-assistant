@@ -11,6 +11,7 @@ import logging
 import tiktoken
 from search_graph import MedicationSearchGraph, QueryIntent
 from security import clamp_query, clean_retrieved_text, neutralize_injection
+from cima_utils import extract_doc_urls, format_cima_date, get_tokenizer, count_tokens
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -118,13 +119,8 @@ Utiliza un lenguaje preciso pero accesible, recordando que la persona que consul
         self.session = None
         self.max_tokens = 14000
         self.use_langgraph = True  # Default to using improved search
-        # Initialize tokenizer
-        try:
-            self.tokenizer = tiktoken.encoding_for_model(Config.CHAT_MODEL)
-        except KeyError:
-            # Older tiktoken versions may not know gpt-4o-mini; cl100k_base is a
-            # close-enough approximation for token counting purposes.
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        # Initialize tokenizer (robust: may be None in restricted networks)
+        self.tokenizer = get_tokenizer(Config.CHAT_MODEL)
         # Active principle database - Spanish
         self.active_principles = [
            "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina",
@@ -153,7 +149,7 @@ Utiliza un lenguaje preciso pero accesible, recordando que la persona que consul
 
     def num_tokens(self, text: str) -> int:
         """Calculate the number of tokens in a string"""
-        return len(self.tokenizer.encode(text))
+        return count_tokens(self.tokenizer, text)
 
     async def get_session(self):
         """Get or create an aiohttp session with improved error handling"""
@@ -179,10 +175,22 @@ Utiliza un lenguaje preciso pero accesible, recordando que la persona que consul
         return self.session
     
     async def get_medication_details(self, nregistro: str) -> Dict:
-        """Enhanced method to fetch medication details with better error handling and fallbacks"""
+        """
+        Fetch medication details using only the documented CIMA endpoints.
+
+        - GET medicamento?nregistro=...      JSON estructurado (incluye
+          principiosActivos[], excipientes[], docs[], viasAdministracion...).
+        - GET docSegmentado/secciones/1      lista de secciones existentes, para
+          no lanzar peticiones a ciegas.
+        - GET docSegmentado/contenido/1|2    con Accept: text/plain, de modo que
+          la API devuelve el texto ya plano y desaparece todo el parsing
+          HTML/regex en el cliente (y con él la superficie de ReDoS).
+        """
         logger.info(f"Fetching medication details for nregistro: {nregistro}")
         session = await self.get_session()
-        
+        headers_json = {"Accept": "application/json"}
+        headers_text = {"Accept": "text/plain"}
+
         # Most important sections first, so if we need to truncate, we keep the important ones
         sections_of_interest = {
             "2": "composicion",
@@ -198,252 +206,129 @@ Utiliza un lenguaje preciso pero accesible, recordando que la persona que consul
             "4.8": "efectos_adversos",
             "5.1": "propiedades_farmacodinamicas",
             "5.2": "propiedades_farmacocineticas",
-            "5.3": "datos_preclinicos",
             "6.2": "incompatibilidades",
             "6.4": "especificaciones",
             "6.5": "envase",
             "6.6": "eliminacion",
-            "7": "titular_autorizacion",
-            "8": "numero_autorizacion",
-            "9": "fecha_autorizacion",
-            "10": "fecha_revision"
         }
-        
-        details = {}
-        errors = []
-        
-        # Define async tasks - with enhanced retry logic
-        async def get_basic_info():
-            detail_url = f"{self.base_url}/medicamento"
-            retry_count = 3
-            
-            for attempt in range(retry_count):
-                try:
-                    async with session.get(detail_url, params={"nregistro": nregistro}) as response:
-                        if response.status == 200:
-                            try:
-                                # Try to parse as JSON first
-                                result = await response.json()
-                                if isinstance(result, dict):
-                                    return result
-                            except Exception as e:
-                                logger.warning(f"Error parsing JSON response for basic info (attempt {attempt+1}): {str(e)}")
-                                # Try as text if JSON fails
-                                text = await response.text()
-                                if text and len(text) > 50:
-                                    # Try to parse as JSON again with some preprocessing
-                                    text = text.strip()
-                                    if text.startswith('{') and text.endswith('}'):
-                                        try:
-                                            import json
-                                            result = json.loads(text)
-                                            if isinstance(result, dict):
-                                                return result
-                                        except:
-                                            pass
-                                
-                                logger.info(f"Retrieved text response for basic info (len: {len(text)})")
-                                return {"nombre": med_name_from_nregistro(nregistro)}
-                        else:
-                            logger.warning(f"Non-200 status for basic info (attempt {attempt+1}): {response.status}")
-                            
-                    # Exponential backoff between retries
-                    if attempt < retry_count - 1:
-                        await asyncio.sleep(1 * (attempt + 1))
-                except Exception as e:
-                    logger.error(f"Error retrieving basic details (attempt {attempt+1}): {str(e)}")
-                    if attempt < retry_count - 1:
-                        await asyncio.sleep(1 * (attempt + 1))
-            
-            errors.append(f"Error obteniendo información básica después de {retry_count} intentos")
-            return {
-                "nombre": med_name_from_nregistro(nregistro),
-                "nregistro": nregistro,
-                "error": "Unable to retrieve basic details"
-            }
-        
-        # Helper function to guess medication name from registration number if all else fails
-        def med_name_from_nregistro(nreg):
-            return f"Medicamento (Nº Registro: {nreg})"
-        
-        # Enhanced section retrieval with better fallbacks
-        async def get_section(section, key):
-            # First attempt: Direct API call
-            tech_url = f"{self.base_url}/docSegmentado/contenido/1"
-            params = {"nregistro": nregistro, "seccion": section}
-            
-            for attempt in range(3):  # Try up to 3 times
-                try:
-                    async with session.get(tech_url, params=params) as response:
-                        if response.status == 200:
-                            try:
-                                # Try to parse as JSON first
-                                result = await response.json()
-                                if isinstance(result, dict) and result.get("contenido") and result.get("contenido") != "No disponible":
-                                    return (key, result)
-                            except Exception as e:
-                                # If JSON parsing fails, try as text
-                                logger.warning(f"JSON parsing failed for section {section}: {str(e)}")
-                                text = await response.text()
-                                if text and len(text) > 50:  # Basic validity check
-                                    return (key, {"contenido": text})
-                        else:
-                            logger.warning(f"Non-200 status for section {section} (attempt {attempt+1}): {response.status}")
-                    
-                    # Only sleep and retry if all attempts haven't been exhausted
-                    if attempt < 2:
-                        await asyncio.sleep(1 * (attempt + 1))
-                except Exception as e:
-                    logger.warning(f"Error in attempt {attempt+1} for section {section}: {str(e)}")
-                    if attempt < 2:
-                        await asyncio.sleep(1 * (attempt + 1))
-            
-            # More aggressive fallback: Try a variety of URLs and patterns
+
+        details: Dict[str, Any] = {}
+        errors: List[str] = []
+
+        # ------------------------------------------------ basic info (JSON)
+        basic_info: Dict[str, Any] = {}
+        detail_url = f"{self.base_url}/medicamento"
+        for attempt in range(3):
             try:
-                # List of potential URLs to try
-                potential_urls = [
-                    f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/{section}/FichaTecnica.html",
-                    f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html",
-                    f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FichaTecnica_{nregistro}.html",
-                    f"https://cima.aemps.es/cima/pdfs/ft/{nregistro}/ft_{nregistro}.pdf",
-                    f"https://cima.aemps.es/cima/rest/medicamento?nregistro={nregistro}"
-                ]
-                
-                # Patterns to try extracting sections from full documents
-                section_patterns = [
-                    f'<h3[^>]*>{section}\\.[^<]+</h3>(.*?)(?:<h3|<div class="section-break">|<div class="section">)',
-                    f'<h[1-6][^>]*>{section}\\.[^<]+</h[1-6]>(.*?)(?:<h[1-6]|<div)',
-                    f'{section}\\.[^<\\n]+(?:<br[^>]*>|\\n)(.*?)(?:{section}\\.\\d+|<h[1-6]|<div)',
-                    f'"{section}"\\s*:\\s*"([^"]+)"',  # JSON pattern
-                    f'"{section}"\\s*:\\s*\\[(.*?)\\]'   # JSON array pattern
-                ]
-                
-                # Try each URL
-                for url in potential_urls:
-                    try:
-                        logger.info(f"Trying fallback URL: {url}")
-                        async with session.get(url) as response:
-                            if response.status == 200:
-                                content = await response.text()
-                                if content and len(content) > 100:
-                                    # Try to extract the section using patterns
-                                    for pattern in section_patterns:
-                                        try:
-                                            match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
-                                            if match:
-                                                section_content = match.group(1).strip()
-                                                if len(section_content) > 50:
-                                                    logger.info(f"Found section {section} using pattern in {url}")
-                                                    return (key, {"contenido": section_content})
-                                        except Exception as e:
-                                            logger.warning(f"Error with pattern extraction: {str(e)}")
-                                    
-                                    # If this is the basic medicamento info, try to extract it as a JSON object
-                                    if url.endswith(f"nregistro={nregistro}"):
-                                        try:
-                                            import json
-                                            data = json.loads(content)
-                                            # Look for relevant keys based on the section
-                                            section_mapping = {
-                                                "2": "composicion",
-                                                "4.1": "indicaciones",
-                                                "4.3": "contraindicaciones"
-                                            }
-                                            
-                                            if section in section_mapping and section_mapping[section] in data:
-                                                return (key, {"contenido": data[section_mapping[section]]})
-                                        except:
-                                            pass
-                    except Exception as e:
-                        logger.warning(f"Error accessing fallback URL {url}: {str(e)}")
+                async with session.get(detail_url, params={"nregistro": nregistro},
+                                       headers=headers_json, timeout=20) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if isinstance(data, dict) and data:
+                            basic_info = data
+                            break
+                    else:
+                        logger.warning(f"Non-200 status for basic info (attempt {attempt+1}): {response.status}")
             except Exception as e:
-                logger.warning(f"Error in fallback mechanism for {section}: {str(e)}")
-            
-            # If all attempts fail, return placeholder with link to full document
-            logger.warning(f"All attempts failed for section {section}")
-            errors.append(f"No se pudo obtener la sección {section}")
-            return (key, {
-                "contenido": f"No disponible - Consultar la ficha técnica completa en: https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html",
-                "error": f"Failed to retrieve section {section} after multiple attempts"
-            })
-        
-        # Enhanced prospecto retrieval
-        async def get_prospecto_section(section=None):
-            urls_to_try = [
-                (f"{self.base_url}/docSegmentado/contenido/2", {"nregistro": nregistro, "seccion": section} if section else {"nregistro": nregistro}),
-                (f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html", None),
-                (f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/Prospecto_{nregistro}.html", None),
-                (f"https://cima.aemps.es/cima/pdfs/p/{nregistro}/P_{nregistro}.pdf", None)
-            ]
-            
-            for url, params in urls_to_try:
-                for attempt in range(2):  # Try each URL up to 2 times
-                    try:
-                        if params:
-                            async with session.get(url, params=params) as response:
-                                if response.status == 200:
-                                    content = await response.text()
-                                    if content and len(content) > 100:
-                                        logger.info(f"Successfully retrieved prospecto from {url}")
-                                        return {"prospecto_html": content}
-                        else:
-                            async with session.get(url) as response:
-                                if response.status == 200:
-                                    content = await response.text()
-                                    if content and len(content) > 100:
-                                        logger.info(f"Successfully retrieved prospecto from {url}")
-                                        return {"prospecto_html": content}
-                                        
-                        if attempt < 1:
-                            await asyncio.sleep(1)
-                    except Exception as e:
-                        logger.warning(f"Error accessing prospecto at {url} (attempt {attempt+1}): {str(e)}")
-                        if attempt < 1:
-                            await asyncio.sleep(1)
-            
-            # If all attempts fail, return informative message
-            errors.append("No se pudo obtener el prospecto")
-            return {
-                "prospecto_html": f"Prospecto disponible en: https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html",
-                "error": "Failed to retrieve prospecto after multiple attempts"
+                logger.error(f"Error retrieving basic details (attempt {attempt+1}): {str(e)}")
+            if attempt < 2:
+                await asyncio.sleep(1 * (attempt + 1))
+
+        if not basic_info:
+            errors.append("Error obteniendo información básica después de 3 intentos")
+            basic_info = {
+                "nombre": f"Medicamento (Nº Registro: {nregistro})",
+                "nregistro": nregistro,
+                "error": "Unable to retrieve basic details",
             }
-        
-        # Execute basic info request first - we need this for sure
-        basic_info = await get_basic_info()
         details["basic"] = basic_info
-        
-        # Only fetch sections if we got basic info successfully
+
+        # Official document URLs straight from the API payload (docs[].urlHtml)
+        doc_urls = extract_doc_urls(basic_info, nregistro)
+        details["document_links"] = doc_urls
+
         if "error" not in basic_info:
-            # Limit concurrent section requests to avoid overwhelming the API
-            semaphore = asyncio.Semaphore(3)  # Reduced from 5 to 3 concurrent requests
-            
-            async def limited_section_fetch(section, key):
+            # ------------------------- discover which sections actually exist
+            available_sections = None
+            try:
+                secciones_url = f"{self.base_url}/docSegmentado/secciones/1"
+                async with session.get(secciones_url, params={"nregistro": nregistro},
+                                       headers=headers_json, timeout=20) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if isinstance(data, list):
+                            available_sections = {
+                                str(item.get("seccion")) for item in data
+                                if isinstance(item, dict) and item.get("seccion")
+                            }
+            except Exception as e:
+                logger.warning(f"Could not list sections for {nregistro}: {str(e)}")
+
+            wanted = {
+                section: key for section, key in sections_of_interest.items()
+                if available_sections is None or section in available_sections
+            }
+            for section, key in sections_of_interest.items():
+                if section not in wanted:
+                    details[key] = {"contenido": "No disponible (sección no presente en la ficha técnica)"}
+
+            # --------------------- fetch section contents as plain text
+            semaphore = asyncio.Semaphore(3)
+
+            async def fetch_section(section: str, key: str):
                 async with semaphore:
-                    return await get_section(section, key)
-            
-            # Create tasks for each section (with concurrency limit)
-            section_tasks = [limited_section_fetch(section, key) for section, key in sections_of_interest.items()]
-            prospecto_task = get_prospecto_section()
-            
-            # Execute section tasks concurrently and process results
+                    contenido_url = f"{self.base_url}/docSegmentado/contenido/1"
+                    params = {"nregistro": nregistro, "seccion": section}
+                    for attempt in range(2):
+                        try:
+                            async with session.get(contenido_url, params=params,
+                                                   headers=headers_text, timeout=20) as response:
+                                if response.status == 200:
+                                    text = await response.text()
+                                    if text and text.strip():
+                                        # text/plain ya viene sin HTML; el saneado
+                                        # neutraliza inyección y acota tamaño.
+                                        return key, {"contenido": clean_retrieved_text(text)}
+                        except Exception as e:
+                            logger.warning(f"Error fetching section {section} (attempt {attempt+1}): {str(e)}")
+                        if attempt == 0:
+                            await asyncio.sleep(1)
+                    errors.append(f"No se pudo obtener la sección {section}")
+                    return key, {
+                        "contenido": f"No disponible - Consultar la ficha técnica completa en: {doc_urls['ficha_tecnica']}",
+                        "error": f"Failed to retrieve section {section}",
+                    }
+
+            async def fetch_prospecto():
+                prospecto_url = f"{self.base_url}/docSegmentado/contenido/2"
+                for attempt in range(2):
+                    try:
+                        async with session.get(prospecto_url, params={"nregistro": nregistro},
+                                               headers=headers_text, timeout=20) as response:
+                            if response.status == 200:
+                                text = await response.text()
+                                if text and len(text.strip()) > 50:
+                                    return {"prospecto_html": clean_retrieved_text(text)}
+                    except Exception as e:
+                        logger.warning(f"Error fetching prospecto (attempt {attempt+1}): {str(e)}")
+                    if attempt == 0:
+                        await asyncio.sleep(1)
+                errors.append("No se pudo obtener el prospecto")
+                return {
+                    "prospecto_html": f"Prospecto disponible en: {doc_urls['prospecto']}",
+                    "error": "Failed to retrieve prospecto",
+                }
+
+            section_tasks = [fetch_section(section, key) for section, key in wanted.items()]
             section_results = await asyncio.gather(*section_tasks)
-            prospecto_result = await prospecto_task
-            
+            details["prospecto"] = await fetch_prospecto()
+
             for key, value in section_results:
                 details[key] = value
-                
-            details["prospecto"] = prospecto_result
-            
-            # Add direct links to documents for better user experience
-            details["document_links"] = {
-                "ficha_tecnica": f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html",
-                "prospecto": f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html"
-            }
-            
-            # Add errors if there were any, for debugging
+
             if errors:
                 details["extraction_errors"] = errors
-        
+
         logger.info(f"Completed fetching details for nregistro: {nregistro}")
         return details
 
@@ -457,17 +342,54 @@ Utiliza un lenguaje preciso pero accesible, recordando que la persona que consul
         nregistro = med.get('nregistro', 'No disponible')
         med_name = med.get('nombre', 'No disponible')
         
-        # Format date if available
-        fecha_autorizacion = basic_info.get('fechaAutorizacion', '')
-        if fecha_autorizacion:
-            try:
-                fecha_obj = datetime.strptime(fecha_autorizacion, "%Y%m%d")
-                fecha_autorizacion = fecha_obj.strftime("%d/%m/%Y")
-            except:
-                pass
-        
+        # Authorisation date: the API returns Unix epoch (per spec), not "yyyymmdd"
+        estado = basic_info.get('estado') if isinstance(basic_info.get('estado'), dict) else {}
+        fecha_autorizacion = format_cima_date(
+            basic_info.get('fechaAutorizacion') or estado.get('aut')
+        )
+
         # Get laboratory information
         lab_titular = basic_info.get('labtitular', med.get('labtitular', 'No disponible'))
+
+        # Official document URLs from docs[] (urlHtml) with documented fallback
+        doc_urls = details.get('document_links') or extract_doc_urls(basic_info, nregistro)
+
+        def structured_composition() -> str:
+            """
+            Build the qualitative/quantitative composition from the structured
+            principiosActivos[]/excipientes[] arrays that GET medicamento already
+            returns (cantidad + unidad per component) — far more reliable for
+            formulation work than re-parsing section 2 free text.
+            """
+            lines = []
+            pa_list = basic_info.get('principiosActivos')
+            if isinstance(pa_list, list) and pa_list:
+                lines.append("Principios activos (estructurado):")
+                for pa in sorted(pa_list, key=lambda x: x.get('orden', 0) if isinstance(x, dict) else 0):
+                    if isinstance(pa, dict) and pa.get('nombre'):
+                        cantidad = f" {pa.get('cantidad', '')} {pa.get('unidad', '')}".rstrip()
+                        lines.append(f"  - {pa['nombre']}{':' + cantidad if cantidad.strip() else ''}")
+            exc_list = basic_info.get('excipientes')
+            if isinstance(exc_list, list) and exc_list:
+                lines.append("Excipientes (estructurado):")
+                for exc in sorted(exc_list, key=lambda x: x.get('orden', 0) if isinstance(x, dict) else 0):
+                    if isinstance(exc, dict) and exc.get('nombre'):
+                        cantidad = f" {exc.get('cantidad', '')} {exc.get('unidad', '')}".rstrip()
+                        lines.append(f"  - {exc['nombre']}{':' + cantidad if cantidad.strip() else ''}")
+            forma = basic_info.get('formaFarmaceutica')
+            if isinstance(forma, dict) and forma.get('nombre'):
+                lines.append(f"Forma farmacéutica: {forma['nombre']}")
+            vias = basic_info.get('viasAdministracion')
+            if isinstance(vias, list) and vias:
+                via_names = [v.get('nombre') for v in vias if isinstance(v, dict) and v.get('nombre')]
+                if via_names:
+                    lines.append(f"Vías de administración: {', '.join(via_names)}")
+            dosis = basic_info.get('dosis')
+            if dosis:
+                lines.append(f"Dosis: {dosis}")
+            return "\n".join(lines)
+
+        composition_block = structured_composition()
         
         # Format sections with proper handling of missing data - enhanced for critical references
         def get_section_content(section_key, max_len=1000):
@@ -506,12 +428,13 @@ INFORMACIÓN BÁSICA:
 - Número de registro: {nregistro}
 - Laboratorio titular: {lab_titular}
 - Principios activos: {med.get('pactivos', basic_info.get('pactivos', 'No disponible'))}
+{composition_block}
 
 URL FICHA TÉCNICA:
-https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
+{doc_urls['ficha_tecnica']}
 
 URL PROSPECTO:
-https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
+{doc_urls['prospecto']}
 """
             return reference
         
@@ -524,8 +447,12 @@ INFORMACIÓN BÁSICA:
 - Número de registro: {nregistro}
 - Laboratorio titular: {lab_titular}
 - Principios activos: {med.get('pactivos', basic_info.get('pactivos', 'No disponible'))}
+{f"- Fecha de autorización: {fecha_autorizacion}" if fecha_autorizacion else ""}
 
-COMPOSICIÓN:
+COMPOSICIÓN CUALITATIVA Y CUANTITATIVA (datos estructurados de CIMA):
+{composition_block or "No disponible en formato estructurado"}
+
+COMPOSICIÓN (sección 2 de la ficha técnica):
 {get_section_content('composicion')}
 
 INDICACIONES TERAPÉUTICAS:
@@ -581,13 +508,13 @@ La información detallada de este medicamento no está completamente disponible 
 Se recomienda consultar directamente la ficha técnica completa a través de los enlaces proporcionados.
 """
 
-        # Add URLs
+        # Add URLs (official ones from docs[] when available)
         reference += f"""
 URL FICHA TÉCNICA:
-https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
+{doc_urls['ficha_tecnica']}
 
 URL PROSPECTO:
-https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
+{doc_urls['prospecto']}
 """
         return reference
 
@@ -688,8 +615,8 @@ https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
                             "basic": med,
                             "extraction_errors": ["Failed to retrieve detailed information after multiple attempts"],
                             "document_links": {
-                                "ficha_tecnica": f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html",
-                                "prospecto": f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html"
+                                "ficha_tecnica": f"https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FichaTecnica.html",
+                                "prospecto": f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/Prospecto.html"
                             }
                         }, query_intent)
                 
@@ -1198,7 +1125,7 @@ centra tu respuesta en esta información y proporciona todos los detalles releva
             ref_num = match.group(1)
             med_name = match.group(2)
             reg_num = match.group(3)
-            return f'[Ref {ref_num}: {med_name} (Nº Registro: {reg_num})](https://cima.aemps.es/cima/dochtml/ft/{reg_num}/FT_{reg_num}.html)'
+            return f'[Ref {ref_num}: {med_name} (Nº Registro: {reg_num})](https://cima.aemps.es/cima/dochtml/ft/{reg_num}/FichaTecnica.html)'
         
         answer_with_links = re.sub(pattern, replace_with_link, answer)
         
@@ -1284,13 +1211,8 @@ Utiliza un lenguaje preciso pero accesible, recordando que tu respuesta puede se
         self.session = None
         self.max_tokens = 14000
         self.use_langgraph = True
-        # Initialize tokenizer
-        try:
-            self.tokenizer = tiktoken.encoding_for_model(Config.CHAT_MODEL)
-        except KeyError:
-            # Older tiktoken versions may not know gpt-4o-mini; cl100k_base is a
-            # close-enough approximation for token counting purposes.
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        # Initialize tokenizer (robust: may be None in restricted networks)
+        self.tokenizer = get_tokenizer(Config.CHAT_MODEL)
         # Active principle database - Spanish
         self.active_principles = [
             "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina", 
@@ -1314,7 +1236,7 @@ Utiliza un lenguaje preciso pero accesible, recordando que tu respuesta puede se
     
     def num_tokens(self, text: str) -> int:
         """Calculate the number of tokens in a string"""
-        return len(self.tokenizer.encode(text))
+        return count_tokens(self.tokenizer, text)
 
     async def get_session(self):
         """Get or create an aiohttp session with improved error handling"""
@@ -1424,7 +1346,7 @@ Si desconoces la respuesta o no hay información suficiente en el contexto, ind�
                 ref_num = match.group(1)
                 med_name = match.group(2)
                 reg_num = match.group(3)
-                return f'[Ref {ref_num}: {med_name} (Nº Registro: {reg_num})](https://cima.aemps.es/cima/dochtml/ft/{reg_num}/FT_{reg_num}.html)'
+                return f'[Ref {ref_num}: {med_name} (Nº Registro: {reg_num})](https://cima.aemps.es/cima/dochtml/ft/{reg_num}/FichaTecnica.html)'
             
             answer_with_links = re.sub(pattern, replace_with_link, answer)
             

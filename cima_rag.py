@@ -378,12 +378,32 @@ class CIMARagAgent:
 
     async def _search_by_principle_id(self, session: aiohttp.ClientSession,
                                       idpractiv1: int) -> List[MedicationRef]:
+        """
+        Recuperación por id de principio activo con los filtros documentados:
+        primero solo autorizados y comercializados (comerc=1, autorizados=1) y,
+        si no hay resultados, sin filtros. Pagina hasta reunir suficientes
+        candidatos en lugar de quedarse con la primera página.
+        """
         url = f"{self.base_url}/medicamentos"
-        params = {"idpractiv1": str(idpractiv1), "pagina": "1"}
-        meds = await self._get_medication_list(session, url, params)
-        # Priorizar presentaciones comercializadas
-        meds.sort(key=lambda m: bool(m.comerc), reverse=True)
-        return meds
+        for extra in ({"comerc": "1", "autorizados": "1"}, {}):
+            meds: List[MedicationRef] = []
+            seen: set = set()
+            for pagina in (1, 2):
+                params = {"idpractiv1": str(idpractiv1), "pagina": str(pagina), **extra}
+                page = await self._get_medication_list(session, url, params)
+                if not page:
+                    break
+                for med in page:
+                    if med.nregistro not in seen:
+                        meds.append(med)
+                        seen.add(med.nregistro)
+                if len(meds) >= MAX_MEDICATIONS * 3:
+                    break
+            if meds:
+                # Priorizar presentaciones comercializadas
+                meds.sort(key=lambda m: bool(m.comerc), reverse=True)
+                return meds
+        return []
 
     async def _search_in_ficha_tecnica(self, session: aiohttp.ClientSession,
                                        seccion: str, texto: str) -> List[MedicationRef]:

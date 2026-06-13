@@ -15,7 +15,8 @@ from datetime import datetime
 import logging
 import tiktoken
 from search_graph import MedicationSearchGraph, QueryIntent
-from security import clamp_query, strip_html, neutralize_injection, clean_retrieved_text, MAX_HTML_CHARS
+from security import clamp_query, neutralize_injection, clean_retrieved_text
+from cima_utils import extract_doc_urls, get_tokenizer, count_tokens
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -72,13 +73,8 @@ IMPORTANTE: No uses ningún tipo de formato que pueda causar problemas en la vis
         self.session = None
         self.max_tokens = 14000
         self.use_langgraph = True
-        # Initialize tokenizer
-        try:
-            self.tokenizer = tiktoken.encoding_for_model(Config.CHAT_MODEL)
-        except KeyError:
-            # Older tiktoken versions may not know gpt-4o-mini; cl100k_base is a
-            # close-enough approximation for token counting purposes.
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        # Initialize tokenizer (robust: may be None in restricted networks)
+        self.tokenizer = get_tokenizer(Config.CHAT_MODEL)
         # Active principle database - Spanish
         self.active_principles = [
            "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina",
@@ -97,7 +93,7 @@ IMPORTANTE: No uses ningún tipo de formato que pueda causar problemas en la vis
 
     def num_tokens(self, text: str) -> int:
         """Calculate the number of tokens in a string"""
-        return len(self.tokenizer.encode(text))
+        return count_tokens(self.tokenizer, text)
 
     async def get_session(self):
         """Get or create an aiohttp session with improved error handling"""
@@ -228,7 +224,10 @@ IMPORTANTE: No uses ningún tipo de formato que pueda causar problemas en la vis
             
             # PRIORITIZE prospecto content specifically
             prospecto_content = await self._get_prospecto_content(nregistro)
-                
+
+            # Official document URLs from the API payload (docs[].urlHtml)
+            doc_urls = extract_doc_urls(basic_info, nregistro)
+
             # Create the context with clear separation between basic info and prospecto content
             context = f"""
 INFORMACIÓN BÁSICA DEL MEDICAMENTO:
@@ -243,8 +242,8 @@ INFORMACIÓN BÁSICA DEL MEDICAMENTO:
 ----FIN PROSPECTO OFICIAL----
 
 Enlaces de referencia:
-- URL Ficha Técnica: https://cima.aemps.es/cima/dochtml/ft/{nregistro}/FT_{nregistro}.html
-- URL Prospecto: https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html
+- URL Ficha Técnica: {doc_urls['ficha_tecnica']}
+- URL Prospecto: {doc_urls['prospecto']}
 """
             return context
             
@@ -254,133 +253,61 @@ Enlaces de referencia:
 
     async def _get_prospecto_content(self, nregistro: str) -> str:
         """
-        Get prospecto content with multiple fallback methods to ensure we get the patient information.
-        
-        Args:
-            nregistro: Registration number of the medication
-            
-        Returns:
-            Prospecto content as text
+        Get prospecto content using only documented CIMA endpoints, requesting
+        plain text directly (Accept: text/plain) so no HTML parsing or regex
+        extraction is needed client-side.
+
+        Order: prospecto (tipoDoc=2) -> key ficha tecnica sections (tipoDoc=1)
+        as fallback when the prospecto is not segmented.
         """
         session = await self.get_session()
-        prospecto_content = "No disponible"
-        
-        # Method 1: Try to get content using the docSegmentado API (most reliable for structured content)
+        headers_text = {"Accept": "text/plain"}
+
+        # Method 1: segmented prospecto as plain text
         try:
             prospecto_url = f"{self.base_url}/docSegmentado/contenido/2"
-            # Use explicit timeout for each request to avoid context errors
-            async with session.get(prospecto_url, params={"nregistro": nregistro}, timeout=30) as response:
+            async with session.get(prospecto_url, params={"nregistro": nregistro},
+                                   headers=headers_text, timeout=30) as response:
                 if response.status == 200:
-                    prospecto_data = await response.json()
-                    if isinstance(prospecto_data, dict) and "contenido" in prospecto_data:
-                        content = prospecto_data.get("contenido", "")
-                        if content and content != "No disponible":
-                            # Clean HTML for better readability if needed
-                            prospecto_content = self._clean_html(content)
-                            return prospecto_content
+                    text = await response.text()
+                    if text and len(text.strip()) > 50:
+                        return clean_retrieved_text(text)
         except Exception as e:
-            logger.warning(f"Error getting prospecto via primary method: {str(e)}")
-        
-        # Method 2: Try to get HTML directly from web version
-        try:
-            urls_to_try = [
-                f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/P_{nregistro}.html",
-                f"https://cima.aemps.es/cima/dochtml/p/{nregistro}/Prospecto_{nregistro}.html"
-            ]
-            
-            for url in urls_to_try:
-                # Add explicit timeout to each request to avoid context errors
-                async with session.get(url, timeout=30) as response:
-                    if response.status == 200:
-                        html_content = await response.text()
-                        if html_content and len(html_content) > 100:
-                            # Extract the main content from HTML
-                            main_content = self._extract_content_from_html(html_content)
-                            if main_content:
-                                return main_content
-        except Exception as e:
-            logger.warning(f"Error getting prospecto via HTML: {str(e)}")
-                
-        # Fallback: If no prospecto was found, attempt to create placeholder with any available info
-        if prospecto_content == "No disponible":
-            # Try getting sections from ficha técnica that could be reformatted
-            try:
-                useful_sections = ["indicaciones", "posologia_procedimiento", "contraindicaciones", "advertencias"]
-                section_content = []
-                
-                for section in useful_sections:
-                    section_url = f"{self.base_url}/docSegmentado/contenido/1"
-                    section_id = {"indicaciones": "41", "posologia_procedimiento": "42", 
-                                 "contraindicaciones": "43", "advertencias": "44"}.get(section, section)
-                    
-                    # Add explicit timeout to each request to avoid context errors
-                    async with session.get(section_url, params={"nregistro": nregistro, "seccion": section_id}, timeout=30) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if isinstance(data, dict) and "contenido" in data:
-                                content = data.get("contenido", "")
-                                if content and content != "No disponible":
-                                    section_content.append(f"INFORMACIÓN DE {section.upper()}:\n{self._clean_html(content)}")
-                
-                if section_content:
-                    return "INFORMACIÓN RECOPILADA DE LA FICHA TÉCNICA (No se encontró el prospecto completo):\n\n" + "\n\n".join(section_content)
-            except Exception as e:
-                logger.warning(f"Error getting fallback sections: {str(e)}")
-        
-        return prospecto_content
-        
-    def _clean_html(self, html_content: str) -> str:
-        """
-        Clean HTML tags from content for better readability.
-        
-        Args:
-            html_content: HTML content to clean
-            
-        Returns:
-            Cleaned text content
-        """
-        # Linear-time, size-capped tag removal (ReDoS-safe) + defang injection.
-        cleaned = clean_retrieved_text(html_content)
-        # Add back some formatting for headings
-        cleaned = re.sub(r'([0-9]\.)([A-Z])', r'\n\1 \2', cleaned)
-        # Add back paragraph breaks
-        cleaned = re.sub(r'(\. )([A-Z])', r'.\n\2', cleaned)
+            logger.warning(f"Error getting prospecto via docSegmentado: {str(e)}")
 
-        return cleaned
-        
-    def _extract_content_from_html(self, html_content: str) -> str:
-        """
-        Extract main content from HTML prospecto.
-        
-        Args:
-            html_content: Full HTML content
-            
-        Returns:
-            Extracted main content
-        """
-        # SECURITY: acotar el tamaño antes de aplicar regex con DOTALL para evitar
-        # backtracking catastrófico (ReDoS) sobre páginas grandes o adversarias.
-        html_content = (html_content or "")[:MAX_HTML_CHARS]
-        # Try to find the main content section
-        main_content_match = re.search(r'<div[^>]*?(?:id=["\'](content|main|prospecto)["\']|class=["\'](content|main|prospecto)["\'])[^>]*>(.*?)</div>(?:</div>|<footer)', html_content, re.DOTALL)
-        if main_content_match:
-            # Extract and clean content
-            content = main_content_match.group(3)
-            return self._clean_html(content)
-            
-        # If we can't find a specific content div, extract text between title and footer
-        body_match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL)
-        if body_match:
-            body_content = body_match.group(1)
-            # Remove header, navigation, footer, etc.
-            cleaned = re.sub(r'<header.*?</header>', '', body_content, flags=re.DOTALL)
-            cleaned = re.sub(r'<nav.*?</nav>', '', cleaned, flags=re.DOTALL)
-            cleaned = re.sub(r'<footer.*?</footer>', '', cleaned, flags=re.DOTALL)
-            # Clean remaining HTML tags
-            return self._clean_html(cleaned)
-            
-        # Last resort: just clean all HTML tags
-        return self._clean_html(html_content)
+        # Fallback: build patient-relevant content from ficha tecnica sections
+        # (also plain text). Section ids per CIMA spec: 4.1 indicaciones,
+        # 4.2 posologia, 4.3 contraindicaciones, 4.4 advertencias.
+        fallback_sections = [
+            ("4.1", "INDICACIONES"),
+            ("4.2", "POSOLOGÍA Y FORMA DE ADMINISTRACIÓN"),
+            ("4.3", "CONTRAINDICACIONES"),
+            ("4.4", "ADVERTENCIAS Y PRECAUCIONES"),
+        ]
+        section_content = []
+        try:
+            for seccion, titulo in fallback_sections:
+                section_url = f"{self.base_url}/docSegmentado/contenido/1"
+                params = {"nregistro": nregistro, "seccion": seccion}
+                async with session.get(section_url, params=params,
+                                       headers=headers_text, timeout=30) as response:
+                    if response.status == 200:
+                        text = await response.text()
+                        if text and text.strip():
+                            section_content.append(
+                                f"INFORMACIÓN DE {titulo}:\n{clean_retrieved_text(text)}"
+                            )
+        except Exception as e:
+            logger.warning(f"Error getting fallback sections: {str(e)}")
+
+        if section_content:
+            return (
+                "INFORMACIÓN RECOPILADA DE LA FICHA TÉCNICA "
+                "(No se encontró el prospecto completo):\n\n"
+                + "\n\n".join(section_content)
+            )
+
+        return "No disponible"
 
     async def generate_prospecto(self, query: str) -> Dict[str, str]:
         """
