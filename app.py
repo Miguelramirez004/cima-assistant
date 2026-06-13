@@ -195,77 +195,6 @@ st.markdown("""
         line-height: 1.5;
     }
 
-    /* Reasoning box */
-    .reasoning-box {
-        background: var(--surface);
-        border: 1px solid var(--line);
-        border-left: 3px solid var(--ink-faint);
-        padding: 14px 18px;
-        margin-bottom: 18px;
-        border-radius: var(--radius);
-        font-size: 0.88rem;
-        color: var(--ink-soft);
-    }
-    .reasoning-box h4 {
-        font-size: 0.8rem;
-        color: var(--ink);
-        margin: 0 0 8px 0;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-    }
-
-    /* References */
-    .reference-item {
-        background: #FFFFFF;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        padding: 10px 14px;
-        margin-bottom: 8px;
-        font-size: 0.83rem;
-        transition: border-color 0.15s ease;
-    }
-    .reference-item:hover {
-        border-color: var(--accent);
-    }
-    .reference-title {
-        font-weight: 600;
-        color: var(--ink);
-        font-size: 0.85rem;
-    }
-    .reference-url {
-        color: var(--accent);
-        word-break: break-all;
-        font-size: 0.8rem;
-        text-decoration: none;
-    }
-    .reference-url:hover {text-decoration: underline;}
-
-    /* Activity / thinking indicators */
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.55; }
-    }
-    .activity-indicator, .thinking-indicator {
-        background: var(--accent-soft);
-        border: 1px solid #CCFBF1;
-        padding: 14px 18px;
-        margin-bottom: 16px;
-        border-radius: var(--radius);
-        animation: pulse 2s ease-in-out infinite;
-    }
-    .activity-indicator h4, .thinking-indicator h4 {
-        font-size: 0.88rem;
-        color: var(--accent);
-        margin: 0;
-        font-weight: 600;
-    }
-    .thinking-indicator p {
-        font-size: 0.82rem;
-        color: var(--ink-soft);
-        margin: 6px 0 0 0;
-    }
-
     /* Prospecto container */
     .prospecto-container {
         background: #FFFFFF;
@@ -323,12 +252,104 @@ st.markdown("""
 
     /* Chat */
     div[data-testid="stChatMessage"] {
-        background: transparent;
-        border-bottom: 1px solid var(--surface);
-        padding: 0.75rem 0;
+        background: #FFFFFF;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 1rem 1.25rem;
+        margin-bottom: 0.85rem;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-user"]) {
+        background: var(--surface);
+        border-color: transparent;
+        box-shadow: none;
+    }
+    div[data-testid="stChatMessage"] div[data-testid^="chatAvatarIcon"] {
+        background: var(--accent) !important;
+        color: #fff !important;
+    }
+    div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-user"]) div[data-testid^="chatAvatarIcon"] {
+        background: var(--ink-soft) !important;
     }
     .stChatInput textarea {
-        border-radius: var(--radius) !important;
+        border-radius: 12px !important;
+        font-size: 0.9rem !important;
+    }
+    .stChatInput {
+        border-top: 1px solid var(--line);
+        padding-top: 0.75rem;
+    }
+
+    /* Retrieval trace (graph steps) */
+    .trace-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 4px 0;
+    }
+    .trace-step {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        font-size: 0.83rem;
+        color: var(--ink-soft);
+        line-height: 1.45;
+    }
+    .trace-num {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 0.7rem;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        margin-top: 1px;
+    }
+
+    /* Source pills */
+    .source-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid var(--line);
+    }
+    .source-label {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--ink-faint);
+        font-weight: 600;
+        margin-right: 2px;
+    }
+    a.source-pill, span.source-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        border: 1px solid #CCFBF1;
+        border-radius: 999px;
+        padding: 4px 12px;
+        font-size: 0.78rem;
+        font-weight: 500;
+        text-decoration: none;
+        transition: background 0.15s ease, border-color 0.15s ease;
+        max-width: 320px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    a.source-pill:hover {
+        background: #CCFBF1;
+        border-color: var(--accent);
+        text-decoration: none;
     }
 
     /* Progress bar */
@@ -650,43 +671,55 @@ with tab2:
         - ¿Cuál es la diferencia entre lorazepam y diazepam?
         """)
     
+    def render_assistant_message(answer: str, reasoning: str, references: list):
+        """Render an assistant chat message: collapsible retrieval trace,
+        answer body and source pills. All dynamic content is sanitized."""
+        # Retrieval trace as numbered steps inside a collapsed expander
+        if st.session_state.show_reasoning and reasoning:
+            steps = [s.lstrip("• ").strip() for s in reasoning.split("\n") if s.strip()]
+            with st.expander(f"Proceso de recuperación · {len(steps)} pasos"):
+                steps_html = "".join(
+                    f'<div class="trace-step"><span class="trace-num">{i}</span>'
+                    f'<span>{escape_html(step)}</span></div>'
+                    for i, step in enumerate(steps, 1)
+                )
+                st.markdown(f'<div class="trace-list">{steps_html}</div>', unsafe_allow_html=True)
+
+        # Main answer
+        st.markdown(answer)
+
+        # Sources as compact linked pills
+        if references:
+            pills = []
+            for ref in references:
+                title = escape_html(ref.get("title", ""))
+                raw_url = ref.get("url", "")
+                if raw_url:
+                    url = safe_url(raw_url)
+                    pills.append(
+                        f'<a class="source-pill" href="{url}" target="_blank" '
+                        f'rel="noopener noreferrer" title="{title}">📄 {title}</a>'
+                    )
+                else:
+                    pills.append(f'<span class="source-pill">📄 {title}</span>')
+            st.markdown(
+                '<div class="source-row"><span class="source-label">Fuentes CIMA</span>'
+                + "".join(pills) + "</div>",
+                unsafe_allow_html=True,
+            )
+
     # Chat container
     chat_container = st.container()
-    
+
     # Display chat messages
     with chat_container:
         for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                # If the message has reasoning and references, display structured content
+            avatar = "⚕️" if message["role"] == "assistant" else None
+            with st.chat_message(message["role"], avatar=avatar):
                 if message["role"] == "assistant" and "reasoning" in message and "references" in message:
-                    
-                    # Show reasoning if enabled
-                    if st.session_state.show_reasoning and message["reasoning"]:
-                        st.markdown("""<div class="reasoning-box">
-                        <h4>💭 Proceso de Razonamiento</h4>
-                        {reasoning}
-                        </div>
-                        """.format(reasoning=escape_html(message["reasoning"])), unsafe_allow_html=True)
-                    
-                    # Show main answer
-                    st.markdown(message["content"])
-                    
-                    # Show references
-                    if message["references"] and len(message["references"]) > 0:
-                        st.markdown("<h4>📚 Referencias</h4>", unsafe_allow_html=True)
-                        for ref in message["references"]:
-                            title = escape_html(ref.get("title", ""))
-                            raw_url = ref.get("url", "")
-                            if raw_url:
-                                url = safe_url(raw_url)
-                                st.markdown(f"""<div class="reference-item">
-                                <span class="reference-title">{title}</span><br>
-                                <a href="{url}" target="_blank" rel="noopener noreferrer" class="reference-url">{url}</a>
-                                </div>""", unsafe_allow_html=True)
-                            else:
-                                st.markdown(f"""<div class="reference-item">
-                                <span class="reference-title">{title}</span>
-                                </div>""", unsafe_allow_html=True)
+                    render_assistant_message(
+                        message["content"], message["reasoning"], message["references"]
+                    )
                 else:
                     # Regular message display
                     st.markdown(message["content"])
@@ -702,76 +735,44 @@ with tab2:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         # Process and display assistant response
-        with st.chat_message("assistant"):
-            # Create a placeholder for the "thinking" animation
-            thinking_placeholder = st.empty()
-            thinking_placeholder.markdown("""
-            <div class="thinking-indicator">
-            <h4>💭 Pensando...</h4>
-            <p>Estoy analizando la información médica disponible sobre su consulta. Este proceso puede tomar unos segundos...</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            with st.spinner("Consultando CIMA (AEMPS)..."):
-                try:
-                    # Get the CIMA RAG agent
-                    cima_rag_agent = get_cima_rag_agent()
-                    if not cima_rag_agent:
-                        st.error("No se puede conectar con OpenAI. Verifique su API key.")
-                    else:
-                        # Run the RAG graph over the official CIMA REST API
+        with st.chat_message("assistant", avatar="⚕️"):
+            try:
+                # Get the CIMA RAG agent
+                cima_rag_agent = get_cima_rag_agent()
+                if not cima_rag_agent:
+                    st.error("No se puede conectar con OpenAI. Verifique su API key.")
+                else:
+                    # Run the RAG graph over the official CIMA REST API,
+                    # with a live status indicator instead of a static spinner
+                    with st.status("Consultando CIMA (AEMPS)...", expanded=False) as status:
                         response = run_async(cima_rag_agent.ask, prompt)
+                        n_sources = len(response.get("references", []))
+                        status.update(
+                            label=f"Consulta completada · {n_sources} fuente(s) oficial(es)",
+                            state="complete",
+                        )
 
-                        # Clear the thinking animation
-                        thinking_placeholder.empty()
-                        
-                        # Extract structured data from response
-                        reasoning = response.get("reasoning", "")
-                        answer = response.get("answer", "")
-                        references = response.get("references", [])
-                        
-                        # Show reasoning if enabled
-                        if st.session_state.show_reasoning and reasoning:
-                            st.markdown("""<div class="reasoning-box">
-                            <h4>💭 Proceso de Razonamiento</h4>
-                            {reasoning}
-                            </div>
-                            """.format(reasoning=escape_html(reasoning)), unsafe_allow_html=True)
-                        
-                        # Show the main answer
-                        st.markdown(answer)
-                        
-                        # Show references
-                        if references and len(references) > 0:
-                            st.markdown("<h4>📚 Referencias</h4>", unsafe_allow_html=True)
-                            for ref in references:
-                                title = escape_html(ref.get("title", ""))
-                                raw_url = ref.get("url", "")
-                                if raw_url:
-                                    url = safe_url(raw_url)
-                                    st.markdown(f"""<div class="reference-item">
-                                    <span class="reference-title">{title}</span><br>
-                                    <a href="{url}" target="_blank" rel="noopener noreferrer" class="reference-url">{url}</a>
-                                    </div>""", unsafe_allow_html=True)
-                                else:
-                                    st.markdown(f"""<div class="reference-item">
-                                    <span class="reference-title">{title}</span>
-                                    </div>""", unsafe_allow_html=True)
-                        
-                        # Create a full message with all components for history
-                        full_message = {
-                            "role": "assistant", 
-                            "content": answer,
-                            "reasoning": reasoning,
-                            "references": references
-                        }
-                        
-                        # Add to session state
-                        st.session_state.messages.append(full_message)
-                except Exception as e:
-                    error_message = f"Error: {str(e)}"
-                    st.markdown(error_message)
-                    st.session_state.messages.append({"role": "assistant", "content": error_message})
+                    # Extract structured data from response
+                    reasoning = response.get("reasoning", "")
+                    answer = response.get("answer", "")
+                    references = response.get("references", [])
+
+                    render_assistant_message(answer, reasoning, references)
+
+                    # Create a full message with all components for history
+                    full_message = {
+                        "role": "assistant",
+                        "content": answer,
+                        "reasoning": reasoning,
+                        "references": references
+                    }
+
+                    # Add to session state
+                    st.session_state.messages.append(full_message)
+            except Exception as e:
+                error_message = f"Error: {str(e)}"
+                st.markdown(error_message)
+                st.session_state.messages.append({"role": "assistant", "content": error_message})
                     
     # Button for new conversation
     if st.button("Nueva conversación", key="new_chat"):

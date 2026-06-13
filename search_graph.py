@@ -632,25 +632,40 @@ class MedicationSearchGraph:
             return []
 
         search_url = f"{self.base_url}/medicamentos"
-        params = {"idpractiv1": str(query.idpractiv1), "pagina": "1"}
         headers = {"Accept": "application/json"}
         results: List[MedicationResult] = []
         seen: Set[str] = set()
 
-        try:
-            async with session.get(search_url, params=params, headers=headers) as response:
-                if response.status != 200:
-                    logger.warning(f"idpractiv1 search returned status {response.status}")
-                    return []
-                data = await response.json()
-        except Exception as e:
-            logger.error(f"Error in idpractiv1 search: {str(e)}")
-            return []
+        # Documented filters first (comerc=1, autorizados=1), falling back to an
+        # unfiltered query; paginate instead of trusting a single page.
+        raw_meds: List[Dict[str, Any]] = []
+        for extra in ({"comerc": "1", "autorizados": "1"}, {}):
+            raw_meds = []
+            raw_seen: Set[str] = set()
+            for pagina in (1, 2):
+                params = {"idpractiv1": str(query.idpractiv1), "pagina": str(pagina), **extra}
+                try:
+                    async with session.get(search_url, params=params, headers=headers) as response:
+                        if response.status != 200:
+                            logger.warning(f"idpractiv1 search returned status {response.status}")
+                            break
+                        data = await response.json()
+                except Exception as e:
+                    logger.error(f"Error in idpractiv1 search: {str(e)}")
+                    break
+                page = data.get("resultados") if isinstance(data, dict) else None
+                if not page:
+                    break
+                for med in page:
+                    if isinstance(med, dict) and med.get("nregistro") not in raw_seen:
+                        raw_meds.append(med)
+                        raw_seen.add(med.get("nregistro"))
+                if len(raw_meds) >= MAX_RESULTS * 3:
+                    break
+            if raw_meds:
+                break
 
-        if not isinstance(data, dict) or not data.get("resultados"):
-            return []
-
-        for med in data["resultados"]:
+        for med in raw_meds:
             if not isinstance(med, dict) or med.get("nregistro") in seen:
                 continue
             try:
