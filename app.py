@@ -250,40 +250,24 @@ st.markdown("""
         font-weight: 500;
     }
 
-    /* Chat — clean light style (Claude-like): no avatars, user as a compact
-       right-aligned bubble, assistant as plain text on the page background */
-    div[data-testid="stChatMessage"] {
-        background: transparent;
-        border: none;
-        box-shadow: none;
-        padding: 0.35rem 0;
-        margin-bottom: 0.35rem;
+    /* Chat — clean light style (Claude-like). Rendered with our own markup
+       (not st.chat_message) so it does not depend on Streamlit internal DOM. */
+    .chat-row {
+        display: flex;
+        margin: 0.35rem 0;
     }
-    div[data-testid="stChatMessage"] [data-testid^="chatAvatarIcon"],
-    div[data-testid="stChatMessage"] img[alt="avatar"] {
-        display: none;
-    }
-    /* User bubble */
-    div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
-        justify-content: flex-end;
-    }
-    div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) div[data-testid="stChatMessageContent"] {
+    .chat-row.user { justify-content: flex-end; }
+    .chat-row.assistant { justify-content: flex-start; }
+    .user-bubble {
         background: var(--surface);
         border: 1px solid var(--line);
         border-radius: 18px 18px 4px 18px;
         padding: 10px 16px;
-        width: fit-content;
         max-width: 75%;
-        margin-left: auto;
-    }
-    div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) p {
-        margin: 0;
         font-size: 0.92rem;
-    }
-    /* Assistant: flush text, comfortable reading width */
-    div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) div[data-testid="stChatMessageContent"] {
-        padding: 0;
-        line-height: 1.65;
+        color: var(--ink);
+        line-height: 1.5;
+        word-wrap: break-word;
     }
     .stChatInput textarea {
         border-radius: 14px !important;
@@ -429,21 +413,15 @@ def get_cima_rag_agent():
     return CIMARagAgent(openai_client)
 
 # Add function to initialize the ProspectoGenerator
-@st.cache_resource
 def get_prospecto_generator():
-    """Get ProspectoGenerator with proper API key handling"""
-    # Try to get API key from Streamlit secrets first (for cloud deployment)
-    try:
-        api_key = st.secrets["OPENAI_API_KEY"]
-    except (KeyError, FileNotFoundError):
-        # Fall back to environment variables or Config
-        api_key = os.getenv("OPENAI_API_KEY") or Config.OPENAI_API_KEY
-    
-    if not api_key:
-        st.error("No se ha encontrado la API key de OpenAI. Verifique los secretos de Streamlit, variables de entorno o el archivo config.py")
+    """Get a ProspectoGenerator. NOT cached on purpose: a fresh instance per
+    script run gets a fresh aiohttp session bound to the current event loop,
+    avoiding the cross-loop reuse that breaks cached async clients in Streamlit.
+    The underlying OpenAI client is the cached one."""
+    openai_client = get_openai_client()
+    if not openai_client:
         return None
-        
-    return ProspectoGenerator(AsyncOpenAI(api_key=api_key))
+    return ProspectoGenerator(openai_client)
 
 # Initialize session state variables if not already present
 if 'chat_history' not in st.session_state:
@@ -685,6 +663,13 @@ with tab2:
         - ¿Cuál es la diferencia entre lorazepam y diazepam?
         """)
     
+    def render_user_message(text: str):
+        """Render the user turn as a compact right-aligned bubble (sanitized)."""
+        st.markdown(
+            f'<div class="chat-row user"><div class="user-bubble">{escape_html(text)}</div></div>',
+            unsafe_allow_html=True,
+        )
+
     def render_assistant_message(answer: str, reasoning: str, references: list):
         """Render an assistant chat message: collapsible retrieval trace,
         answer body and source pills. All dynamic content is sanitized."""
@@ -725,32 +710,30 @@ with tab2:
     # Chat container
     chat_container = st.container()
 
-    # Display chat messages
+    # Display chat messages (custom markup, not st.chat_message)
     with chat_container:
         for message in st.session_state.messages:
-            # Avatars are hidden via CSS for a clean, Claude-like layout; the
-            # role still drives the bubble styling through chatAvatarIcon-* ids.
-            with st.chat_message(message["role"]):
-                if message["role"] == "assistant" and "reasoning" in message and "references" in message:
-                    render_assistant_message(
-                        message["content"], message["reasoning"], message["references"]
-                    )
-                else:
-                    # Regular message display
-                    st.markdown(message["content"])
-    
+            if message["role"] == "user":
+                render_user_message(message["content"])
+            elif "reasoning" in message and "references" in message:
+                render_assistant_message(
+                    message["content"], message["reasoning"], message["references"]
+                )
+            else:
+                # Plain assistant message (e.g. an error)
+                st.markdown(message["content"])
+
     # Chat input
     if prompt := st.chat_input("Escriba su consulta sobre medicamentos..."):
         # Add to search history
         st.session_state.search_history.add(prompt)
-        
+
         # Display user message
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        render_user_message(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         # Process and display assistant response
-        with st.chat_message("assistant"):
+        with st.container():
             try:
                 # Get the CIMA RAG agent
                 cima_rag_agent = get_cima_rag_agent()

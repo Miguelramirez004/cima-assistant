@@ -156,26 +156,23 @@ class CIMARagAgent:
         self.base_url = base_url
         self.resolver = ActivePrincipleResolver(base_url)
         self.conversation_history: List[Dict[str, str]] = []
-        self.session: Optional[aiohttp.ClientSession] = None
 
     # ------------------------------------------------------------------ infra
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self.session is None or self.session.closed:
-            connector = aiohttp.TCPConnector(ssl=True, limit=5, keepalive_timeout=30)
-            timeout = aiohttp.ClientTimeout(total=60, connect=20, sock_read=30)
-            self.session = aiohttp.ClientSession(
-                connector=connector, timeout=timeout, raise_for_status=False
-            )
-        return self.session
+    def _new_session(self) -> aiohttp.ClientSession:
+        """
+        Create a fresh aiohttp session bound to the CURRENT event loop.
 
-    async def close(self) -> None:
-        if self.session and not self.session.closed:
-            try:
-                await self.session.close()
-                await asyncio.sleep(0.25)
-            except Exception as e:
-                logger.error(f"Error closing session: {str(e)}")
+        The agent is cached across Streamlit reruns (@st.cache_resource) but each
+        request runs in a new event loop, so a persisted session/connector would
+        be bound to a dead loop and every request would fail. We therefore build
+        and tear down a session per `ask()` call.
+        """
+        connector = aiohttp.TCPConnector(ssl=True, limit=5, keepalive_timeout=30)
+        timeout = aiohttp.ClientTimeout(total=60, connect=20, sock_read=30)
+        return aiohttp.ClientSession(
+            connector=connector, timeout=timeout, raise_for_status=False
+        )
 
     def clear_history(self) -> None:
         self.conversation_history = []
@@ -186,14 +183,15 @@ class CIMARagAgent:
         """Ejecuta el grafo completo para una consulta y devuelve la respuesta."""
         state = RAGState(query=clamp_query(question))
         try:
-            session = await self._get_session()
-
-            self._node_analyze(state)
-            await self._node_resolve(session, state)
-            await self._node_retrieve(session, state)
-            if state.medications:
-                await self._node_fetch_sections(session, state)
-            await self._node_generate(state)
+            # Fresh per-call session (see _new_session) — avoids cross-event-loop
+            # reuse when the agent is cached across Streamlit reruns.
+            async with self._new_session() as session:
+                self._node_analyze(state)
+                await self._node_resolve(session, state)
+                await self._node_retrieve(session, state)
+                if state.medications:
+                    await self._node_fetch_sections(session, state)
+                await self._node_generate(state)
 
             success = bool(state.answer)
         except Exception as e:
