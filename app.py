@@ -250,29 +250,43 @@ st.markdown("""
         font-weight: 500;
     }
 
-    /* Chat */
+    /* Chat — clean light style (Claude-like): no avatars, user as a compact
+       right-aligned bubble, assistant as plain text on the page background */
     div[data-testid="stChatMessage"] {
-        background: #FFFFFF;
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        padding: 1rem 1.25rem;
-        margin-bottom: 0.85rem;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-    }
-    div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-user"]) {
-        background: var(--surface);
-        border-color: transparent;
+        background: transparent;
+        border: none;
         box-shadow: none;
+        padding: 0.35rem 0;
+        margin-bottom: 0.35rem;
     }
-    div[data-testid="stChatMessage"] div[data-testid^="chatAvatarIcon"] {
-        background: var(--accent) !important;
-        color: #fff !important;
+    div[data-testid="stChatMessage"] [data-testid^="chatAvatarIcon"],
+    div[data-testid="stChatMessage"] img[alt="avatar"] {
+        display: none;
     }
-    div[data-testid="stChatMessage"]:has(div[data-testid="chatAvatarIcon-user"]) div[data-testid^="chatAvatarIcon"] {
-        background: var(--ink-soft) !important;
+    /* User bubble */
+    div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+        justify-content: flex-end;
+    }
+    div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) div[data-testid="stChatMessageContent"] {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 18px 18px 4px 18px;
+        padding: 10px 16px;
+        width: fit-content;
+        max-width: 75%;
+        margin-left: auto;
+    }
+    div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) p {
+        margin: 0;
+        font-size: 0.92rem;
+    }
+    /* Assistant: flush text, comfortable reading width */
+    div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) div[data-testid="stChatMessageContent"] {
+        padding: 0;
+        line-height: 1.65;
     }
     .stChatInput textarea {
-        border-radius: 12px !important;
+        border-radius: 14px !important;
         font-size: 0.9rem !important;
     }
     .stChatInput {
@@ -714,8 +728,9 @@ with tab2:
     # Display chat messages
     with chat_container:
         for message in st.session_state.messages:
-            avatar = "⚕️" if message["role"] == "assistant" else None
-            with st.chat_message(message["role"], avatar=avatar):
+            # Avatars are hidden via CSS for a clean, Claude-like layout; the
+            # role still drives the bubble styling through chatAvatarIcon-* ids.
+            with st.chat_message(message["role"]):
                 if message["role"] == "assistant" and "reasoning" in message and "references" in message:
                     render_assistant_message(
                         message["content"], message["reasoning"], message["references"]
@@ -735,7 +750,7 @@ with tab2:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         # Process and display assistant response
-        with st.chat_message("assistant", avatar="⚕️"):
+        with st.chat_message("assistant"):
             try:
                 # Get the CIMA RAG agent
                 cima_rag_agent = get_cima_rag_agent()
