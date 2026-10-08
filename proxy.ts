@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { IS_PREVIEW } from "@/lib/env";
+import { IS_PREVIEW, SUPABASE_CONFIGURED } from "@/lib/env";
 import { updateSession } from "@/lib/supabase/proxy";
 
 const PUBLIC_PREFIXES = ["/login", "/auth/", "/invite/"];
@@ -8,6 +8,12 @@ const PUBLIC_PREFIXES = ["/login", "/auth/", "/invite/"];
 export async function proxy(request: NextRequest) {
   if (IS_PREVIEW) {
     return NextResponse.next();
+  }
+  // Despliegue sin variables de Supabase: página explicativa en vez de un error 500
+  if (!SUPABASE_CONFIGURED) {
+    const { pathname } = request.nextUrl;
+    if (pathname === "/configuracion-pendiente") return NextResponse.next();
+    return NextResponse.rewrite(new URL("/configuracion-pendiente", request.url));
   }
 
   const { response, isAuthenticated } = await updateSession(request);

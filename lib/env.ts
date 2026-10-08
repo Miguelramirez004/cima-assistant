@@ -10,3 +10,6 @@ export const SUPABASE_PUBLISHABLE_KEY =
 // la interfaz en local. Nunca se activa en producción.
 export const IS_PREVIEW =
   process.env.NEXT_PUBLIC_PREVIEW_MODE === "1" && process.env.NODE_ENV !== "production";
+
+/** Sin URL ni clave pública de Supabase la app no puede autenticar a nadie. */
+export const SUPABASE_CONFIGURED = Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);
