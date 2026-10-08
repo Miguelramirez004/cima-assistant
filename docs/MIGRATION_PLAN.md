@@ -3,6 +3,16 @@
 Status: proposal · Target: CIMA Assistant running on Vercel, with Supabase for
 auth, persistence and caching.
 
+**Decisions taken**
+
+- **Login required** — no anonymous access; every API call is authenticated.
+- **Keep Python** — existing logic is exposed as a FastAPI backend on Vercel.
+- **Multi‑organization** — users belong to one or more organizations
+  (pharmacies, hospitals…); all data, quotas and administration are scoped to
+  the organization.
+- *Pending:* Vercel plan (Hobby vs Pro). Pro is needed for commercial use and
+  longer function durations — assume Pro.
+
 ---
 
 ## 0. Where we are today
@@ -43,18 +53,21 @@ request, which removes this by construction.
 ```
 Browser ──► Vercel
             ├─ Next.js (App Router, TypeScript, Tailwind)      ← UI
-            │    • Supabase Auth (magic link / Google)
-            │    • reads history directly from Supabase (RLS)
+            │    • Supabase Auth (magic link / Google / Microsoft) — login required
+            │    • organization switcher (active org)
+            │    • reads history directly from Supabase (org‑scoped RLS)
             │
             └─ /api/*  Python Functions (FastAPI)              ← existing logic
                  • POST /api/formulacion
                  • POST /api/consulta      (streams via SSE)
                  • POST /api/prospecto
-                 • verifies Supabase JWT, writes results to Supabase
+                 • verifies Supabase JWT + X-Org-Id membership
+                 • enforces org quota, writes results to Supabase
                  │
                  ├──► CIMA REST API (AEMPS)
                  ├──► OpenAI
                  └──► Supabase Postgres (service role)
+                        • organizations, organization_members, invitations
                         • profiles, conversations, messages
                         • formulations, prospectos
                         • cima_cache (shared HTTP cache)
@@ -67,8 +80,11 @@ Browser ──► Vercel
 |---|---|---|
 | Frontend | **Next.js 15 App Router + TypeScript + Tailwind + shadcn/ui** | First‑class on Vercel; easy streaming UI; the current "Claude‑style" chat look maps cleanly to Tailwind |
 | Backend | **Keep Python, wrap it in FastAPI on Vercel's Python runtime** in the same repo/project | Reuses ~4,000 lines of tested CIMA/RAG logic instead of rewriting. A TypeScript port is optional later (Phase 9) |
-| Auth | **Supabase Auth** (email magic link + optional Google) | Gives per‑user history and lets us rate‑limit OpenAI spend |
-| DB access | Frontend: `@supabase/ssr` with anon key + RLS. Backend: service‑role key, server‑side only | Users can read only their own rows; only the backend writes AI results |
+| Auth | **Supabase Auth, login required**, invite‑only sign‑up (email magic link + Google/Microsoft OAuth; SAML SSO later for large orgs) | Clinical B2B tool: no public sign‑up, no anonymous OpenAI spend |
+| Tenancy | **Shared database, `organization_id` on every tenant table, enforced by RLS** | Simplest model that scales to many orgs; one schema, one deployment |
+| Org roles | `owner` · `admin` · `member` per membership, plus a global `platform_admin` flag on `profiles` | Owners/admins manage members and see org usage; members use the tools |
+| Data visibility | Users see **their own** history; org admins see **org usage aggregates** (not other members' query content) | Least privilege by default; can be relaxed later to "shared within org" |
+| DB access | Frontend: `@supabase/ssr` with anon key + RLS. Backend: service‑role key, server‑side only, always filtering by verified org | Only the backend writes AI results |
 | Caching | `cima_cache` table in Postgres (TTL) | In‑memory caches die with every cold start on serverless |
 | Streaming | Server‑Sent Events from `/api/consulta` | Replaces `st.status` spinner with live trace + token streaming |
 | Vector search | **Not needed now** (pgvector available later) | The app retrieves live from the CIMA API, not from an index |
@@ -132,20 +148,67 @@ Goal: `cima_core` imports nothing from Streamlit and holds no cross‑request st
 
 ### Phase 3 — Supabase schema (≈1 day)
 
-`supabase/migrations/0001_init.sql`:
+`supabase/migrations/0001_init.sql` — tenancy first, then content tables.
 
 ```sql
--- Profiles (1:1 with auth.users)
-create table public.profiles (
-  id uuid primary key references auth.users on delete cascade,
-  display_name text,
-  role text not null default 'user',          -- 'user' | 'admin'
+-- ---------- Tenancy ----------
+create table public.organizations (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  slug text not null unique,
+  monthly_request_quota int not null default 2000,   -- OpenAI‑backed requests / month
   created_at timestamptz not null default now()
 );
 
--- Consultas CIMA chat
+create table public.profiles (
+  id uuid primary key references auth.users on delete cascade,
+  display_name text,
+  is_platform_admin boolean not null default false,
+  last_organization_id uuid references public.organizations on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create type public.org_role as enum ('owner', 'admin', 'member');
+
+create table public.organization_members (
+  organization_id uuid not null references public.organizations on delete cascade,
+  user_id uuid not null references auth.users on delete cascade,
+  role public.org_role not null default 'member',
+  created_at timestamptz not null default now(),
+  primary key (organization_id, user_id)
+);
+create index on public.organization_members (user_id);
+
+create table public.organization_invitations (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations on delete cascade,
+  email text not null,
+  role public.org_role not null default 'member',
+  token text not null unique default encode(gen_random_bytes(24), 'hex'),
+  invited_by uuid references auth.users,
+  expires_at timestamptz not null default now() + interval '7 days',
+  accepted_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+-- RLS helpers (security definer avoids recursive RLS on organization_members)
+create function public.is_org_member(org uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from organization_members
+                 where organization_id = org and user_id = auth.uid());
+$$;
+
+create function public.has_org_role(org uuid, roles public.org_role[]) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from organization_members
+                 where organization_id = org and user_id = auth.uid()
+                   and role = any(roles));
+$$;
+
+-- ---------- Content (every row carries organization_id + user_id) ----------
 create table public.conversations (
   id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations on delete cascade,
   user_id uuid not null references auth.users on delete cascade,
   title text,
   created_at timestamptz not null default now(),
@@ -155,30 +218,31 @@ create table public.conversations (
 create table public.messages (
   id uuid primary key default gen_random_uuid(),
   conversation_id uuid not null references public.conversations on delete cascade,
+  organization_id uuid not null references public.organizations on delete cascade,
   user_id uuid not null references auth.users on delete cascade,
   role text not null check (role in ('user','assistant')),
   content text not null,
   reasoning text,                 -- retrieval trace
-  references jsonb default '[]',  -- [{nregistro, nombre, url, ...}]
+  "references" jsonb default '[]',
   created_at timestamptz not null default now()
 );
 create index on public.messages (conversation_id, created_at);
 
--- Formulación magistral
 create table public.formulations (
   id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations on delete cascade,
   user_id uuid not null references auth.users on delete cascade,
   query text not null,
   answer text not null,
   context text,
-  references jsonb default '[]',
+  "references" jsonb default '[]',
   advanced_search boolean not null default true,
   created_at timestamptz not null default now()
 );
 
--- Prospectos
 create table public.prospectos (
   id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations on delete cascade,
   user_id uuid not null references auth.users on delete cascade,
   query text not null,
   medication_name text,
@@ -187,46 +251,77 @@ create table public.prospectos (
   created_at timestamptz not null default now()
 );
 
--- Shared CIMA response cache (backend only)
+create table public.usage_events (
+  id bigint generated always as identity primary key,
+  organization_id uuid not null references public.organizations on delete cascade,
+  user_id uuid not null references auth.users on delete cascade,
+  kind text not null,             -- 'formulacion' | 'consulta' | 'prospecto'
+  prompt_tokens int, completion_tokens int,
+  created_at timestamptz not null default now()
+);
+create index on public.usage_events (organization_id, created_at);
+
+-- ---------- Global (not tenant data: CIMA is public information) ----------
 create table public.cima_cache (
   key text primary key,           -- e.g. 'medicamento:12345', 'maestras:paracetamol'
   value jsonb not null,
   expires_at timestamptz not null
 );
 create index on public.cima_cache (expires_at);
-
--- Usage / rate limiting
-create table public.usage_events (
-  id bigint generated always as identity primary key,
-  user_id uuid not null references auth.users on delete cascade,
-  kind text not null,             -- 'formulacion' | 'consulta' | 'prospecto'
-  prompt_tokens int, completion_tokens int,
-  created_at timestamptz not null default now()
-);
-create index on public.usage_events (user_id, created_at);
 ```
 
-Row Level Security:
+Row Level Security (`0002_rls.sql`):
 
 ```sql
-alter table public.profiles      enable row level security;
-alter table public.conversations enable row level security;
-alter table public.messages      enable row level security;
-alter table public.formulations  enable row level security;
-alter table public.prospectos    enable row level security;
-alter table public.cima_cache    enable row level security;  -- no policies: service role only
-alter table public.usage_events  enable row level security;
+alter table public.organizations            enable row level security;
+alter table public.profiles                 enable row level security;
+alter table public.organization_members     enable row level security;
+alter table public.organization_invitations enable row level security;
+alter table public.conversations            enable row level security;
+alter table public.messages                 enable row level security;
+alter table public.formulations             enable row level security;
+alter table public.prospectos               enable row level security;
+alter table public.usage_events             enable row level security;
+alter table public.cima_cache               enable row level security; -- no policies: service role only
 
--- Users read/delete their own rows; inserts come from the backend (service role)
-create policy "own rows" on public.conversations for select using (auth.uid() = user_id);
-create policy "own rows del" on public.conversations for delete using (auth.uid() = user_id);
--- repeat select/delete for messages, formulations, prospectos, usage_events
-create policy "own profile" on public.profiles for select using (auth.uid() = id);
+-- Organizations & memberships
+create policy org_read   on public.organizations for select using (is_org_member(id));
+create policy org_update on public.organizations for update
+  using (has_org_role(id, '{owner,admin}')) with check (has_org_role(id, '{owner,admin}'));
+create policy members_read on public.organization_members for select using (is_org_member(organization_id));
+create policy members_manage on public.organization_members for all
+  using (has_org_role(organization_id, '{owner,admin}'))
+  with check (has_org_role(organization_id, '{owner,admin}'));
+create policy invites_manage on public.organization_invitations for all
+  using (has_org_role(organization_id, '{owner,admin}'))
+  with check (has_org_role(organization_id, '{owner,admin}'));
+create policy own_profile on public.profiles for select using (id = auth.uid());
+
+-- Content: own rows, and only while still a member of that org
+create policy own_read on public.conversations for select
+  using (user_id = auth.uid() and is_org_member(organization_id));
+create policy own_delete on public.conversations for delete
+  using (user_id = auth.uid() and is_org_member(organization_id));
+-- same select/delete pair for messages, formulations, prospectos
+
+-- Usage: own events, or all org events for owners/admins
+create policy usage_read on public.usage_events for select
+  using ((user_id = auth.uid() and is_org_member(organization_id))
+         or has_org_role(organization_id, '{owner,admin}'));
 ```
 
 Plus:
-- Trigger `on auth.users insert` → create `profiles` row.
-- `pg_cron` job (Supabase extension) to `delete from cima_cache where expires_at < now()` nightly.
+- Trigger on `auth.users` insert → create `profiles` row.
+- `accept_invitation(token)` RPC (security definer): checks token, expiry and
+  that `auth.email()` matches the invite, inserts the membership, marks
+  `accepted_at`.
+- Guard so an org can't be left without an `owner` (trigger on
+  `organization_members` update/delete).
+- Supabase Auth: **disable public sign‑ups**; users enter via an invitation
+  (`auth.admin.inviteUserByEmail` from the backend) — Google/Microsoft OAuth
+  still allowed, but a login with no membership lands on a "no organization —
+  ask your admin for an invite" page.
+- `pg_cron` job to purge expired `cima_cache` rows nightly.
 - Generate TS types: `supabase gen types typescript > lib/database.types.ts`.
 
 ### Phase 4 — FastAPI backend on Vercel (≈2–3 days)
@@ -235,7 +330,14 @@ Plus:
    - `app = FastAPI()` with routes `POST /api/formulacion`,
      `POST /api/consulta`, `POST /api/prospecto`, `GET /api/health`.
    - Dependency `current_user`: read `Authorization: Bearer <supabase access
-     token>`, verify it (Supabase JWT secret / JWKS), return `user_id`.
+     token>`, verify it (Supabase JWKS), return `user_id`. No token → 401.
+   - Dependency `current_org`: read `X-Org-Id` header, check a row exists in
+     `organization_members` for (`org`, `user_id`) → else 403. Every insert
+     and query in the backend uses this verified org id — the service role
+     bypasses RLS, so this check is the tenant boundary on the server side.
+   - Admin routes: `POST /api/orgs/{id}/invitations` (owner/admin; sends the
+     Supabase invite email), `POST /api/orgs` (platform admin only — creates an
+     org and invites its first owner).
    - Request bodies validated with Pydantic; reuse `security.clamp_query`.
 2. **Consulta (chat)** flow:
    - Load last N messages of `conversation_id` from Supabase (replaces
@@ -249,8 +351,10 @@ Plus:
    `prospectos`; return the row id. Prospecto‑redirect logic (`"use la pestaña
    'Prospectos'"` string check in `app.py`) becomes a typed field
    `redirect: "prospecto" | null`.
-4. **Rate limiting**: before calling OpenAI, count `usage_events` for the user
-   in the last hour/day; reject with 429 over the limit. Record tokens after.
+4. **Quotas & rate limiting**: before calling OpenAI, count `usage_events`
+   for the org this month against `organizations.monthly_request_quota`
+   (→ 402/429 "cuota agotada") and for the user in the last minute/hour
+   (→ 429). Record tokens after each call, so usage is billable per org.
 5. `vercel.json`:
    ```json
    {
@@ -272,15 +376,21 @@ Route map (replaces the 4 Streamlit tabs + sidebar):
 
 | Route | Replaces | Notes |
 |---|---|---|
-| `/login` | — | Supabase magic link / Google |
+| `/login` | — | Supabase magic link / Google / Microsoft; no sign‑up form |
+| `/invite/[token]` | — | Accepts an invitation (calls `accept_invitation`) |
+| `/no-organization` | — | Shown to a logged‑in user without memberships |
+| `/settings/organization` | — | Owners/admins: rename org, members list, change roles, remove members, pending invitations |
+| `/settings/usage` | — | Owners/admins: requests and tokens per month / per member vs quota |
+| `/admin` | — | Platform admins only: create orgs, set quotas |
 | `/formulacion` | Tab 1 | Textarea + examples, "búsqueda avanzada" toggle, result rendered with `react-markdown` + `remark-gfm`, collapsible CIMA context, **Download .md** (client‑side Blob) |
 | `/consultas` and `/consultas/[conversationId]` | Tab 2 | Chat UI with streaming (SSE via `fetch` + `ReadableStream`), collapsible "proceso de razonamiento", reference chips linking to ficha técnica, "Nueva conversación" |
 | `/prospectos` | Tab 3 | Same pattern as formulación; download |
 | `/historial` | Tab 4 + sidebar history | Server component reading the user's rows directly from Supabase (RLS); delete actions |
-| Layout sidebar | Sidebar | Recent queries, settings toggles (stored in `localStorage` or `profiles`) |
+| Layout sidebar | Sidebar | **Organization switcher** (active org stored in `profiles.last_organization_id` and sent as `X-Org-Id`), recent queries, settings toggles |
 
 Implementation notes:
-- `middleware.ts` with `@supabase/ssr` to refresh sessions and protect routes.
+- `middleware.ts` with `@supabase/ssr`: refresh sessions and redirect **every**
+  route except `/login` and `/invite/*` to `/login` when unauthenticated.
 - `lib/api.ts` wraps calls to `/api/*`, attaching the access token.
 - Port the design tokens from the injected CSS in `app.py` (teal `#0D9488`,
   Inter, slate text) into `tailwind.config.ts`.
@@ -314,17 +424,22 @@ Vercel env vars (Production / Preview / Development):
 1. Parity check: run the same set of ~20 queries (formulación, consultas, prospectos) in Streamlit and in the new app; compare references and answers.
 2. Playwright E2E: login → each feature → history shows item → download works.
 3. Load: confirm cold start + typical latency; verify CIMA cache hit rates in `cima_cache`.
-4. Security: RLS tests (user A cannot read user B's rows), service key not in client bundle (`grep` the `.next` output), 429 rate‑limit behavior, CORS same‑origin only.
+4. Security: RLS tests with pgTAP / `supabase test db` — user A cannot read
+   user B's rows; a member of org X cannot read org Y's data even with a
+   forged `X-Org-Id`; a removed member loses access immediately; a `member`
+   cannot invite or change roles; every API route returns 401 without a token, service key not in client bundle (`grep` the `.next` output), 429 rate‑limit behavior, CORS same‑origin only.
 5. Observability: Vercel logs + Supabase logs; optionally Sentry for both runtimes.
 
 ### Phase 8 — Cut‑over (≈½ day)
 
 1. Deploy to production on Vercel; attach custom domain.
-2. Point users to the new URL; put a notice/redirect link on the Streamlit app.
-3. After a stable period, delete `legacy/`, `.streamlit/`, `packages.txt`,
+2. Create the first organizations and invite their owners from `/admin`.
+3. Point users to the new URL; put a notice/redirect link on the Streamlit app,
+   then shut it down (it has no login, so it must not stay public).
+4. After a stable period, delete `legacy/`, `.streamlit/`, `packages.txt`,
    `runtime.txt`, Streamlit dev‑container config; update `README.md` and
    `SETUP_GUIDE.md`.
-4. No data migration is required — Streamlit history was never persisted.
+5. No data migration is required — Streamlit history was never persisted.
 
 ### Phase 9 — Optional follow‑ups
 
@@ -332,7 +447,8 @@ Vercel env vars (Production / Preview / Development):
   one language, Edge‑friendly streaming, no Python cold starts. Worth it only
   once the Python logic is stable; do it module by module behind the same API
   contract.
-- Shared/exportable formulations (public read link via a `share_token`).
+- Share formulations within an organization (org‑visible flag + RLS policy).
+- SAML SSO for large organizations (Supabase Pro), per‑org billing with Stripe.
 - PDF export of prospectos (server‑side).
 - pgvector index of fichas técnicas for faster semantic retrieval.
 - Admin dashboard over `usage_events` (cost per user/day).
@@ -345,13 +461,13 @@ Vercel env vars (Production / Preview / Development):
 |---|---|
 | 1. Prep & restructure | 1 day |
 | 2. Decouple Python core | 1–2 days |
-| 3. Supabase schema + RLS | 1 day |
+| 3. Supabase schema + multi‑org RLS | 2 days |
 | 4. FastAPI on Vercel | 2–3 days |
-| 5. Next.js frontend | 4–6 days |
+| 5. Next.js frontend (incl. org admin pages) | 6–8 days |
 | 6. Env, secrets, CI | 1 day |
 | 7. Testing & hardening | 2 days |
 | 8. Cut‑over | ½ day |
-| **Total** | **≈ 2.5–3.5 weeks** for one developer |
+| **Total** | **≈ 3–4 weeks** for one developer |
 
 ## 4. Risks & mitigations
 
@@ -359,14 +475,16 @@ Vercel env vars (Production / Preview / Development):
 |---|---|
 | Function timeouts on slow CIMA responses | Postgres cache, parallel requests (already `asyncio.gather`), `maxDuration`, stream partial progress |
 | Python cold starts | Keep deps lean (no Streamlit/tiktoken in hot path if possible), Fluid Compute |
-| OpenAI cost abuse once public | Auth required + `usage_events` rate limits |
+| OpenAI cost abuse | Login required, invite‑only, per‑org monthly quota + per‑user rate limit |
+| Cross‑tenant data leak | `organization_id` on every row, RLS via `is_org_member`, server‑side org check on every API call, pgTAP tests in CI |
 | CIMA API rate limits / outages | Cache with TTL, graceful error messages (already present), retry with backoff |
 | Leaking service role key | Only in server env vars; CI check on client bundle |
 | Health‑data/GDPR concerns | EU region, users can delete their history, no PII in prompts beyond the query |
 
-## 5. Open questions to decide before starting
+## 5. Remaining open questions
 
-1. Should the app require login, or allow anonymous use (Supabase anonymous sign‑ins) with history only for signed‑in users?
-2. Keep Python backend (recommended for speed of migration) or go straight to a full TypeScript rewrite?
-3. Who are the users (single pharmacy, multiple organizations)? If multiple orgs, add an `organizations` table and org‑scoped RLS now.
-4. Vercel plan (Hobby vs Pro) — affects `maxDuration` and commercial use.
+1. Vercel plan — Pro assumed (commercial use, longer `maxDuration`).
+2. Who creates organizations: only platform admins (assumed), or self‑serve
+   "create your organization" sign‑up?
+3. Should members of the same organization see each other's formulations and
+   prospectos, or keep history private per user (assumed)?
