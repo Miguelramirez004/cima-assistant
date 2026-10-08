@@ -43,10 +43,12 @@ con **Supabase**; el plan completo está en
 
 ```
 app/                 Frontend Next.js (App Router, Tailwind)
-api/index.py         API FastAPI (Vercel Python Function) — /api/*
+api/index.py         Punto de entrada de la API en Vercel — /api/* (ver docs/API.md)
+server/              API FastAPI: autenticación Supabase, organizaciones, cuotas, endpoints
 cima_core/           Núcleo Python: CIMA REST, RAG, formulación, prospectos
   service.py         Puntos de entrada sin estado (run_consulta, run_formulacion, run_prospecto)
-  cache.py           Caché inyectable (memoria; Supabase en la fase 4)
+  cache.py           Caché inyectable (memoria o tabla cima_cache de Supabase)
+supabase/            Migraciones SQL, políticas RLS multi-organización y pruebas pgTAP
 legacy/app.py        Interfaz Streamlit actual (se retira tras el cambio)
 tests/               Pruebas pytest del núcleo y la API
 ```
@@ -67,6 +69,7 @@ echo "OPENAI_API_KEY=su_api_key_openai" > .env
 
 npm run dev        # Next.js en :3000 + FastAPI en :8000 (/api/* se reenvía)
 npm run test:api   # pytest
+npm run test:db    # migraciones Supabase + pruebas RLS (PostgreSQL + pgTAP)
 npm run lint && npm run typecheck
 ```
 

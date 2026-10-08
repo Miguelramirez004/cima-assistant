@@ -2,10 +2,11 @@
 
 from .cache import Cache, MemoryCache, NullCache, get_default_cache, set_default_cache
 from .models import ChatTurn, ConsultaResult, FormulacionResult, ProspectoResult, Reference
-from .service import run_consulta, run_formulacion, run_prospecto
+from .service import run_consulta, run_formulacion, run_prospecto, stream_consulta
+from .usage import TrackedOpenAI
 
 __all__ = [
     "Cache", "MemoryCache", "NullCache", "get_default_cache", "set_default_cache",
     "ChatTurn", "ConsultaResult", "FormulacionResult", "ProspectoResult", "Reference",
-    "run_consulta", "run_formulacion", "run_prospecto",
+    "run_consulta", "run_formulacion", "run_prospecto", "stream_consulta", "TrackedOpenAI",
 ]

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 
 from openai import AsyncOpenAI
 
@@ -57,6 +57,30 @@ def _history_dicts(history: Optional[Sequence[Any]]) -> List[Dict[str, str]]:
     return turns
 
 
+def _to_reference(ref: Dict[str, Any]) -> Reference:
+    match = re.search(r"/ft/(\w+)/", ref.get("url", ""))
+    return Reference(title=ref.get("title", ""), url=ref.get("url", ""),
+                     nregistro=match.group(1) if match else None)
+
+
+async def stream_consulta(question: str, history: Optional[Sequence[Any]] = None, *,
+                          openai_client: AsyncOpenAI,
+                          cache: Optional[Cache] = None) -> AsyncIterator[Dict[str, Any]]:
+    """
+    Consulta CIMA en streaming. Emite los eventos de `CIMARagAgent.ask_stream`
+    con las referencias ya normalizadas ({title, url, nregistro}); el último
+    evento es {"type": "done", ...} con la respuesta completa y el `usage`.
+    """
+    agent = CIMARagAgent(openai_client, cache=cache)
+    try:
+        async for event in agent.ask_stream(question, history=_history_dicts(history)):
+            if "references" in event:
+                event = {**event, "references": [_to_reference(r).model_dump() for r in event["references"]]}
+            yield event
+    finally:
+        await agent.close()
+
+
 async def run_consulta(question: str, history: Optional[Sequence[Any]] = None, *,
                        openai_client: AsyncOpenAI, cache: Optional[Cache] = None) -> ConsultaResult:
     """Consulta CIMA (chat RAG). `history`: turnos previos de la misma conversación."""
@@ -66,11 +90,7 @@ async def run_consulta(question: str, history: Optional[Sequence[Any]] = None, *
     finally:
         await agent.close()
 
-    references = []
-    for ref in raw.get("references", []):
-        match = re.search(r"/ft/(\w+)/", ref.get("url", ""))
-        references.append(Reference(title=ref.get("title", ""), url=ref.get("url", ""),
-                                    nregistro=match.group(1) if match else None))
+    references = [_to_reference(ref) for ref in raw.get("references", [])]
     return ConsultaResult(
         answer=raw.get("answer", ""),
         reasoning=raw.get("reasoning", ""),
