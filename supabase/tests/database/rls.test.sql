@@ -4,7 +4,7 @@
 
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(47);
+select plan(49);
 
 -- ------------------------------------------------------------------- fixtures
 -- Org A: alice (owner), bob (admin), carol (member). Org B: dave (owner).
@@ -55,6 +55,12 @@ insert into public.cima_cache (key, value, expires_at) values
 select is((select count(*)::int from public.profiles), 6, 'a profile is created for every auth user');
 select is((select display_name from public.profiles where id = '00000000-0000-0000-0000-00000000000a'),
           'Alice', 'profile display_name comes from user metadata');
+select is((select email from public.profiles where id = '00000000-0000-0000-0000-00000000000a'),
+          'alice@a.test', 'profile email is copied from the auth user');
+update auth.users set email = 'alice@new.test' where id = '00000000-0000-0000-0000-00000000000a';
+select is((select email from public.profiles where id = '00000000-0000-0000-0000-00000000000a'),
+          'alice@new.test', 'profile email follows email changes');
+update auth.users set email = 'alice@a.test' where id = '00000000-0000-0000-0000-00000000000a';
 select throws_ok(
   $$insert into public.messages (conversation_id, organization_id, user_id, role, content)
     values ('cccccccc-0000-0000-0000-000000000000', 'bbbbbbbb-0000-0000-0000-000000000000',
