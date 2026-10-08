@@ -28,7 +28,11 @@ auth, persistence and caching.
 - [x] Phase 4 — API: login (JWKS), organization check, quotas, formulación /
   prospecto / consulta (SSE streaming) saved to Supabase, invitations and
   organization creation, shared CIMA cache — see [`API.md`](API.md)
-- [ ] Phase 5 — frontend · [ ] Phase 6–8
+- [x] Phase 5 — frontend: magic-link login, invitation acceptance, org
+  switcher, Formulación, Consultas (streaming), Prospectos, Historial,
+  Organización (members, roles, invitations, usage), Administración;
+  preview mode with sample data for local UI work
+- [ ] Phase 6–8 — env vars/Auth settings in production, end-to-end testing, cut-over
 
 ---
 

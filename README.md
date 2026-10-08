@@ -42,7 +42,9 @@ con **Supabase**; el plan completo está en
 [`docs/MIGRATION_PLAN.md`](docs/MIGRATION_PLAN.md).
 
 ```
-app/                 Frontend Next.js (App Router, Tailwind)
+app/                 Frontend Next.js (App Router, Tailwind): login, invitación, formulación,
+                     consultas (streaming), prospectos, historial, organización, administración
+components/, lib/    Componentes de la interfaz y capa de datos (Supabase con RLS / modo vista previa)
 api/index.py         Punto de entrada de la API en Vercel — /api/* (ver docs/API.md)
 server/              API FastAPI: autenticación Supabase, organizaciones, cuotas, endpoints
 cima_core/           Núcleo Python: CIMA REST, RAG, formulación, prospectos
@@ -68,6 +70,14 @@ npm install
 echo "OPENAI_API_KEY=su_api_key_openai" > .env
 
 npm run dev        # Next.js en :3000 + FastAPI en :8000 (/api/* se reenvía)
+```
+
+Para trabajar la interfaz sin Supabase ni OpenAI, añada
+`NEXT_PUBLIC_PREVIEW_MODE=1` a `.env.local`: la app arranca con un usuario,
+organizaciones y resultados de ejemplo (respuestas simuladas, incluido el
+streaming de Consultas). Nunca se activa en una build de producción.
+
+```bash
 npm run test:api   # pytest
 npm run test:db    # migraciones Supabase + pruebas RLS (PostgreSQL + pgTAP)
 npm run lint && npm run typecheck

@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // El indicador de desarrollo no tapa el menú de usuario del sidebar
+  devIndicators: { position: "bottom-right" },
   turbopack: {
     rules: {
       "*.css": {
