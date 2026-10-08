@@ -10,7 +10,8 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
-    "test:api": ".venv/bin/pytest"
+    "test:api": ".venv/bin/pytest",
+    "test:db": "scripts/test_db.sh"
   },
   "dependencies": {
     "next": "16.4.0",
@@ -25,6 +26,7 @@
     "concurrently": "^10.0.6",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
+    "supabase": "^2.120.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   },

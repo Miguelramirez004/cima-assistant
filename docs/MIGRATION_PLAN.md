@@ -22,7 +22,8 @@ auth, persistence and caching.
   FastAPI skeleton, `vercel.json` (`supabase init` moves to Phase 3)
 - [x] Phase 2 — `cima_core` package decoupled from Streamlit (stateless
   agents, injectable cache, typed results, tests)
-- [ ] Phase 3 — Supabase schema + RLS
+- [x] Phase 3 — Supabase schema + multi-org RLS, 45 pgTAP tests, CI
+  (`supabase/`, setup steps in [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md))
 - [ ] Phase 4 — API endpoints · [ ] Phase 5 — frontend · [ ] Phase 6–8
 
 ---
@@ -138,7 +139,7 @@ Phase 8.
 Goal: `cima_core` imports nothing from Streamlit and holds no cross‑request state.
 
 1. **Config**: `config.py` reads only env vars (`OPENAI_API_KEY`,
-   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`). Remove `st.secrets` fallbacks.
+   `SUPABASE_URL`, `SUPABASE_SECRET_KEY`). Remove `st.secrets` fallbacks.
 2. **Per‑request objects**: agents currently keep `self.session`
    (`aiohttp.ClientSession`) and `conversation_history` on long‑lived instances.
    Change to: create the agent per request, open the `ClientSession` in an
@@ -418,10 +419,9 @@ Vercel env vars (Production / Preview / Development):
 | Variable | Where used | Exposed to browser? |
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | frontend | yes |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | frontend | yes (safe with RLS) |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (formerly anon key) | frontend | yes (safe with RLS) |
 | `SUPABASE_URL` | backend | no |
-| `SUPABASE_SERVICE_ROLE_KEY` | backend | **never** |
-| `SUPABASE_JWT_SECRET` (or use JWKS) | backend | no |
+| `SUPABASE_SECRET_KEY` (formerly service_role key) | backend | **never** |
 | `OPENAI_API_KEY` | backend | no |
 
 - Use the **Vercel ↔ Supabase integration** to sync these automatically, and
