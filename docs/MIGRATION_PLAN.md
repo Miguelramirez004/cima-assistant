@@ -25,7 +25,10 @@ auth, persistence and caching.
 - [x] Phase 3 — Supabase schema + multi-org RLS, 45 pgTAP tests, CI
   (`supabase/`, setup steps in [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md));
   live project `dmdboqstotxpoidodrow` (Frankfurt) created and migrated
-- [ ] Phase 4 — API endpoints · [ ] Phase 5 — frontend · [ ] Phase 6–8
+- [x] Phase 4 — API: login (JWKS), organization check, quotas, formulación /
+  prospecto / consulta (SSE streaming) saved to Supabase, invitations and
+  organization creation, shared CIMA cache — see [`API.md`](API.md)
+- [ ] Phase 5 — frontend · [ ] Phase 6–8
 
 ---
 
