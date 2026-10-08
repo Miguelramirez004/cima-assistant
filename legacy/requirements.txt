@@ -1,0 +1,9 @@
+# Interfaz Streamlit heredada (Streamlit Community Cloud: archivo principal legacy/app.py).
+# Se elimina tras el paso a Vercel. Mantener alineado con ../requirements.txt.
+streamlit==1.50.0
+openai==3.26.1
+aiohttp==3.14.4
+httpx==0.28.1
+pydantic==2.14.0
+tiktoken==0.14.0
+python-dotenv==1.2.4

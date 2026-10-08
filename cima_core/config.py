@@ -5,7 +5,7 @@ load_dotenv()
 
 class Config:
     # OpenAI Model Configuration
-    CHAT_MODEL = "gpt-4o-mini"
+    CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
     # CIMA API Configuration

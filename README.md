@@ -35,32 +35,53 @@ Toda la información clínica procede de la API CIMA de la AEMPS (Agencia Españ
   - Referencias con enlace directo a cada ficha técnica utilizada
   - Conversación con memoria de contexto
 
-## Instalación
+## Estructura del repositorio (migración a Vercel + Supabase en curso)
 
-1. Clone este repositorio:
-   ```
-   git clone https://github.com/Miguelramirez004/cima-assistant.git
-   cd cima-assistant
-   ```
+La aplicación se está migrando de Streamlit a **Next.js + FastAPI en Vercel**
+con **Supabase**; el plan completo está en
+[`docs/MIGRATION_PLAN.md`](docs/MIGRATION_PLAN.md).
 
-2. Instale las dependencias:
-   ```
-   pip install -r requirements.txt
-   ```
-
-3. Configure la API key:
-
-   Cree un archivo `.env` en el directorio raíz y añada su API key:
-   ```
-   OPENAI_API_KEY=su_api_key_openai
-   ```
-
-## Uso
-
-Inicie la aplicación con Streamlit:
 ```
-streamlit run app.py
+app/                 Frontend Next.js (App Router, Tailwind)
+api/index.py         API FastAPI (Vercel Python Function) — /api/*
+cima_core/           Núcleo Python: CIMA REST, RAG, formulación, prospectos
+  service.py         Puntos de entrada sin estado (run_consulta, run_formulacion, run_prospecto)
+  cache.py           Caché inyectable (memoria; Supabase en la fase 4)
+legacy/app.py        Interfaz Streamlit actual (se retira tras el cambio)
+tests/               Pruebas pytest del núcleo y la API
 ```
+
+## Desarrollo local
+
+Requisitos: Python 3.12+, Node.js 20.9+ y una API key de OpenAI.
+
+```bash
+git clone https://github.com/Miguelramirez004/cima-assistant.git
+cd cima-assistant
+
+python -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+npm install
+
+echo "OPENAI_API_KEY=su_api_key_openai" > .env
+
+npm run dev        # Next.js en :3000 + FastAPI en :8000 (/api/* se reenvía)
+npm run test:api   # pytest
+npm run lint && npm run typecheck
+```
+
+### Interfaz Streamlit (legacy)
+
+```bash
+pip install -r legacy/requirements.txt
+streamlit run legacy/app.py
+```
+
+En Streamlit Community Cloud, el archivo principal pasa a ser
+`legacy/app.py` (Settings → General → Main file path); las dependencias se
+leen de `legacy/requirements.txt`. Secret necesario: `OPENAI_API_KEY`.
+
+## Uso (interfaz Streamlit)
 
 ### Formulación Magistral
 
@@ -85,7 +106,9 @@ streamlit run app.py
 
 ## Tecnologías
 
-- **Streamlit**: Framework para la interfaz de usuario
+- **Next.js + Tailwind** (Vercel): nueva interfaz web
+- **FastAPI** (Vercel Python Functions): API sobre el núcleo `cima_core`
+- **Streamlit**: interfaz heredada (`legacy/app.py`)
 - **OpenAI API (GPT-4o mini)**: Redacción de formulaciones, prospectos y respuestas
 - **CIMA REST API**: API oficial de la AEMPS (medicamentos, maestras, buscarEnFichaTecnica, docSegmentado)
 - **Pydantic**: Estado tipado del grafo RAG y validación de resultados
@@ -93,14 +116,9 @@ streamlit run app.py
 
 ## Requisitos
 
-- Python 3.8 o superior
+- Python 3.12 o superior y Node.js 20.9 o superior
 - Conexión a Internet para acceder a las APIs
 - API key de OpenAI
-
-## Configuración en Streamlit Cloud
-
-Para implementar en Streamlit Cloud, agregue el siguiente secret:
-- OPENAI_API_KEY
 
 ## Nota Legal
 

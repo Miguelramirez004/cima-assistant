@@ -6,7 +6,7 @@ Este documento proporciona instrucciones detalladas para configurar y ejecutar C
 
 Para ejecutar CIMA Assistant necesita:
 
-- Python 3.9 o superior
+- Python 3.12 o superior
 - Una clave API de OpenAI (única clave necesaria; se usa GPT-4o mini)
 - Conexión a Internet para acceder a la API de CIMA (AEMPS) y a OpenAI
 
@@ -37,7 +37,7 @@ source venv/bin/activate
 ### 3. Instalar las dependencias
 
 ```bash
-pip install -r requirements.txt
+pip install -r legacy/requirements.txt
 ```
 
 ### 4. Configurar la clave API
@@ -86,7 +86,7 @@ OPENAI_API_KEY=su_clave_openai_aquí
 Para ejecutar la aplicación en modo local:
 
 ```bash
-streamlit run app.py
+streamlit run legacy/app.py
 ```
 
 La aplicación estará disponible en `http://localhost:8501` por defecto.

@@ -6,11 +6,18 @@ import re
 import os
 from datetime import datetime  # Fixed import
 from dotenv import load_dotenv
-from formulacion import FormulationAgent
-from cima_rag import CIMARagAgent
-from prospecto import ProspectoGenerator  # New import for ProspectoGenerator
-from config import Config
-from security import escape_html, safe_url
+import sys
+from pathlib import Path
+
+# Interfaz Streamlit heredada (se retira al pasar a Vercel): el núcleo vive en
+# el paquete cima_core de la raíz del repositorio.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from cima_core.formulacion import FormulationAgent  # noqa: E402
+from cima_core.cima_rag import CIMARagAgent  # noqa: E402
+from cima_core.prospecto import ProspectoGenerator  # noqa: E402
+from cima_core.config import Config  # noqa: E402
+from cima_core.security import escape_html, safe_url  # noqa: E402
 
 # Load environment variables (for local development)
 load_dotenv()
@@ -523,8 +530,6 @@ with st.sidebar:
         st.session_state.formulation_history = []
         st.session_state.prospecto_history = []
         st.session_state.messages = []
-        if cima_rag_agent:
-            cima_rag_agent.clear_history()
         st.rerun()
 
 # Main tabs - Add new Prospectos tab
@@ -760,7 +765,12 @@ with tab2:
                     # Run the RAG graph over the official CIMA REST API,
                     # with a live status indicator instead of a static spinner
                     with st.status("Consultando CIMA (AEMPS)...", expanded=False) as status:
-                        response = run_async(cima_rag_agent.ask, prompt)
+                        # El historial es el de ESTA sesión (el agente es compartido)
+                        history = [
+                            {"role": m["role"], "content": m["content"]}
+                            for m in st.session_state.messages[:-1]
+                        ]
+                        response = run_async(cima_rag_agent.ask, prompt, history)
                         n_sources = len(response.get("references", []))
                         status.update(
                             label=f"Consulta completada · {n_sources} fuente(s) oficial(es)",
@@ -792,8 +802,6 @@ with tab2:
     # Button for new conversation
     if st.button("Nueva conversación", key="new_chat"):
         st.session_state.messages = []
-        if cima_rag_agent:
-            cima_rag_agent.clear_history()
         st.rerun()
 
 # New tab for Prospectos with improved display
