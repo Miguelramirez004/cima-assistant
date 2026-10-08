@@ -4,14 +4,31 @@ How to create the Supabase project for CIMA Assistant and apply the schema in
 `supabase/migrations`. Steps 1–4 are one-off; step 5 repeats for every new
 organization.
 
+## Current status
+
+| | |
+|---|---|
+| Project | `cima-assistant`, ref `dmdboqstotxpoidodrow`, Central EU (Frankfurt), free plan |
+| URL | `https://dmdboqstotxpoidodrow.supabase.co` |
+| Steps 1–2 | **Done** (2026-10-08): all migrations applied, nightly cron job active, RLS tests passed against the live database |
+| Steps 3–5 | **To do** in the dashboard / Vercel (no API access from the assistant) |
+
 ## What the schema contains
 
 | Migration | Contents |
 |---|---|
-| `…150000_tenancy.sql` | `organizations`, `profiles`, `organization_members` (roles `owner` / `admin` / `member`), `organization_invitations`; helper functions `is_org_member`, `has_org_role`, `is_platform_admin`; profile-on-signup trigger; "last owner can't leave" guard; `accept_invitation(token)` RPC |
-| `…150100_content.sql` | `conversations` + `messages`, `formulations`, `prospectos`, `usage_events`, `cima_cache`; `org_requests_this_month(org)` for quotas |
-| `…150200_rls.sql` | Minimal grants (nothing for `anon`) and RLS policies |
-| `…150300_cache_cleanup.sql` | `purge_expired_cima_cache()` scheduled nightly with `pg_cron` |
+| `…151602_tenancy.sql` | `organizations`, `profiles`, `organization_members` (roles `owner` / `admin` / `member`), `organization_invitations`; RLS helper functions `is_org_member`, `has_org_role`, `is_platform_admin`; profile-on-signup trigger; "last owner can't leave" guard; `accept_invitation(token)` RPC |
+| `…151819_content.sql` | `conversations` + `messages`, `formulations`, `prospectos`, `usage_events`, `cima_cache`; `org_requests_this_month(org)` for quotas |
+| `…152019_rls.sql` | Minimal grants (nothing for `anon`) and RLS policies |
+| `…152106_cache_cleanup.sql` | `purge_expired_cima_cache()` scheduled nightly with `pg_cron` |
+| `…152301_harden_function_privileges.sql` | Moves the RLS helpers to a `private` schema not exposed by the API and removes EXECUTE on trigger functions (Supabase security advisor) |
+
+Migration file versions match the versions recorded in the live project, so
+`npx supabase db push` only applies migrations added after these.
+
+Remaining security-advisor notices are intentional: `cima_cache` has RLS on
+with no policies (server-only table), and `accept_invitation` is callable by
+logged-in users by design.
 
 Access rules (all covered by `supabase/tests/database/rls.test.sql`):
 
@@ -45,6 +62,9 @@ npx supabase db push                           # applies supabase/migrations
 
 Then, in the dashboard, check **Database → Extensions** shows `pg_cron`
 enabled and **Integrations → Cron** lists `purge-expired-cima-cache`.
+
+For future migrations: create them with `npx supabase migration new <name>`,
+test with `npm run test:db`, then `npx supabase db push`.
 
 ## 3. Configure Auth
 

@@ -4,7 +4,7 @@
 
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(45);
+select plan(47);
 
 -- ------------------------------------------------------------------- fixtures
 -- Org A: alice (owner), bob (admin), carol (member). Org B: dave (owner).
@@ -68,6 +68,10 @@ set local role anon;
 select throws_ok('select * from public.organizations', '42501', null, 'anon cannot read organizations');
 select throws_ok('select * from public.formulations', '42501', null, 'anon cannot read content');
 select throws_ok($$select public.accept_invitation('tok-eve')$$, '42501', null, 'anon cannot accept invitations');
+select throws_ok($$select private.is_org_member('aaaaaaaa-0000-0000-0000-000000000000')$$, '42501', null,
+                 'anon cannot call the RLS helper functions');
+select throws_ok($$select public.ensure_org_has_owner()$$, '42501', null,
+                 'trigger functions are not callable through the API');
 reset role;
 
 -- --------------------------------------------------------- carol (member, A)

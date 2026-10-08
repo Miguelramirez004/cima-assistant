@@ -23,7 +23,8 @@ auth, persistence and caching.
 - [x] Phase 2 — `cima_core` package decoupled from Streamlit (stateless
   agents, injectable cache, typed results, tests)
 - [x] Phase 3 — Supabase schema + multi-org RLS, 45 pgTAP tests, CI
-  (`supabase/`, setup steps in [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md))
+  (`supabase/`, setup steps in [`SUPABASE_SETUP.md`](SUPABASE_SETUP.md));
+  live project `dmdboqstotxpoidodrow` (Frankfurt) created and migrated
 - [ ] Phase 4 — API endpoints · [ ] Phase 5 — frontend · [ ] Phase 6–8
 
 ---

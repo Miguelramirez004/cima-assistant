@@ -2,7 +2,7 @@
 -- Tenancy: organizations, memberships, invitations and user profiles.
 --
 -- Model: shared database; every tenant row carries organization_id and is
--- protected by RLS (see 20261008150200_rls.sql). Sign-up is disabled in Auth;
+-- protected by RLS (see the *_rls.sql migration). Sign-up is disabled in Auth;
 -- users join an organization through an invitation.
 -- =============================================================================
 
