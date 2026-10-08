@@ -6,7 +6,7 @@ following the official AEMPS format for Spanish medications.
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Any, Union, Optional
 from openai import AsyncOpenAI
-from config import Config
+from .config import Config
 import aiohttp
 import re
 import json
@@ -14,9 +14,9 @@ import asyncio
 from datetime import datetime
 import logging
 import tiktoken
-from search_graph import MedicationSearchGraph, QueryIntent
-from security import clamp_query, neutralize_injection, clean_retrieved_text
-from cima_utils import extract_doc_urls, get_tokenizer, count_tokens
+from .search_graph import MedicationSearchGraph, QueryIntent
+from .security import clamp_query, neutralize_injection, clean_retrieved_text
+from .cima_utils import extract_doc_urls, get_tokenizer, count_tokens
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

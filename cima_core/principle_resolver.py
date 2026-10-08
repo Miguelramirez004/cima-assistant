@@ -29,7 +29,8 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
-from config import Config
+from .cache import Cache, get_default_cache
+from .config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +57,15 @@ class ActivePrincipleResolver:
     """
     Resuelve términos de usuario a IDs oficiales de principio activo.
 
-    Mantiene una caché en memoria por proceso (los catálogos de la AEMPS cambian
-    con muy poca frecuencia). La resolución fallida también se cachea para no
-    repetir llamadas inútiles dentro de la misma sesión.
+    Usa una caché inyectable (por defecto la compartida del proceso; en Vercel,
+    la tabla `cima_cache`): los catálogos de la AEMPS cambian con muy poca
+    frecuencia. La resolución fallida también se cachea para no repetir
+    llamadas inútiles.
     """
 
-    def __init__(self, base_url: str = Config.CIMA_BASE_URL):
+    def __init__(self, base_url: str = Config.CIMA_BASE_URL, cache: Optional[Cache] = None):
         self.base_url = base_url
-        self._cache: Dict[str, Optional[ResolvedPrinciple]] = {}
+        self._cache = cache
 
     async def resolve(self, session: aiohttp.ClientSession, term: str) -> Optional[ResolvedPrinciple]:
         """
@@ -73,12 +75,20 @@ class ActivePrincipleResolver:
         key = _normalize(term)
         if not key or len(key) < 3:
             return None
-        if key in self._cache:
-            return self._cache[key]
+        cache = self._cache or get_default_cache()
+        cache_key = f"maestras:1:{key}"
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            if not cached.get("found"):
+                return None
+            return ResolvedPrinciple(id=cached["id"], nombre=cached["nombre"], matched_term=term)
 
         items = await self._fetch_master_items(session, term)
         resolved = self._pick_best(key, term, items)
-        self._cache[key] = resolved
+        await cache.set(cache_key, (
+            {"found": True, "id": resolved.id, "nombre": resolved.nombre}
+            if resolved else {"found": False}
+        ))
         if resolved:
             logger.info(f"Resolved active principle '{term}' -> id={resolved.id} ({resolved.nombre})")
         return resolved

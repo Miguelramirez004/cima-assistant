@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Any, Union, Optional
 from openai import AsyncOpenAI
-from config import Config
+from .cache import Cache, get_default_cache
+from .config import Config
 import aiohttp
 import re
 import json
@@ -9,9 +10,9 @@ import asyncio
 from datetime import datetime
 import logging
 import tiktoken
-from search_graph import MedicationSearchGraph, QueryIntent
-from security import clamp_query, clean_retrieved_text, neutralize_injection
-from cima_utils import extract_doc_urls, format_cima_date, get_tokenizer, count_tokens
+from .search_graph import MedicationSearchGraph, QueryIntent
+from .security import clamp_query, clean_retrieved_text, neutralize_injection
+from .cima_utils import extract_doc_urls, format_cima_date, get_tokenizer, count_tokens
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -112,9 +113,10 @@ Si hay distintas presentaciones o formas farmacéuticas del medicamento, mencion
 Utiliza un lenguaje preciso pero accesible, recordando que la persona que consulta puede ser un profesional sanitario o un paciente.
 """
 
-    def __init__(self, openai_client: AsyncOpenAI):
+    def __init__(self, openai_client: AsyncOpenAI, cache: Optional[Cache] = None):
         self.openai_client = openai_client
         self.reference_cache = {}
+        self.cache = cache
         self.base_url = Config.CIMA_BASE_URL
         self.session = None
         self.max_tokens = 14000
@@ -175,6 +177,19 @@ Utiliza un lenguaje preciso pero accesible, recordando que la persona que consul
         return self.session
     
     async def get_medication_details(self, nregistro: str) -> Dict:
+        """Detalles de un medicamento, servidos desde la caché compartida si es posible."""
+        cache = self.cache or get_default_cache()
+        cache_key = f"medicamento_detalle:{nregistro}"
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            return cached
+        details = await self._fetch_medication_details(nregistro)
+        # Solo cachear resultados completos: un fallo transitorio no debe persistir
+        if details and not details.get("extraction_errors") and not details.get("error"):
+            await cache.set(cache_key, details)
+        return details
+
+    async def _fetch_medication_details(self, nregistro: str) -> Dict:
         """
         Fetch medication details using only the documented CIMA endpoints.
 
@@ -1142,235 +1157,6 @@ centra tu respuesta en esta información y proporciona todos los detalles releva
     
     async def close(self):
         """Close the aiohttp session to free resources with proper cleanup"""
-        if self.session and not self.session.closed:
-            try:
-                await self.session.close()
-                # Give the event loop time to clean up connections
-                await asyncio.sleep(0.25)
-            except Exception as e:
-                logger.error(f"Error closing session: {str(e)}")
-                # Ensure session is marked as closed even if there was an error
-                self.session = None
-
-@dataclass
-class CIMAExpertAgent:
-    openai_client: AsyncOpenAI
-    reference_cache: Dict[str, str] = field(default_factory=dict)
-    conversation_history: List[Dict[str, str]] = field(default_factory=list)
-    base_url: str = Config.CIMA_BASE_URL
-    session: aiohttp.ClientSession = None
-    max_tokens: int = 14000  # Reserve tokens for prompt and response
-    use_langgraph: bool = True  # Use improved search by default
-    
-    system_prompt = """Eres un experto farmacéutico especializado en medicamentos registrados en CIMA (Centro de Información online de Medicamentos de la AEMPS).
-
-Tu objetivo es proporcionar información precisa y detallada sobre medicamentos en respuesta a las consultas del usuario. Debes:
-
-1. Responder con información basada exclusivamente en los datos oficiales de CIMA
-2. Citar las fuentes utilizando el formato: [Ref X: Nombre del medicamento (Nº Registro)]
-3. Explicar la información de manera clara y estructurada
-4. Proporcionar enlaces a las fichas técnicas y prospectos cuando sea relevante
-5. Advertir cuando la información consultada no esté disponible en CIMA
-
-Tipos de consultas que puedes responder:
-- Indicaciones y contraindicaciones de medicamentos
-- Posología y forma de administración
-- Composición y excipientes
-- Efectos adversos y precauciones
-- Datos de conservación y caducidad
-- Comparativas entre medicamentos similares
-- Alternativas terapéuticas dentro del mismo grupo
-
-Si se menciona un medicamento concreto, prioriza la información sobre ese medicamento específico. Si la consulta es general, proporciona información sobre los medicamentos más representativos o utilizados para esa indicación.
-
-Para consultas muy específicas sobre formulación magistral, recomienda consultar la pestaña "Formulación Magistral" de esta aplicación.
-
-Responde de manera profesional pero accesible, recordando que tus respuestas pueden ser leídas tanto por profesionales sanitarios como por pacientes.
-"""
-    
-    focused_system_prompt = """Eres un experto farmacéutico especializado en información sobre {information_type} de medicamentos registrados en CIMA.
-
-Has recibido una consulta específica sobre {information_type} de {active_principle}. Responde de manera clara, directa y completa, centrándote exclusivamente en esta consulta.
-
-La información debe estar basada exclusivamente en los datos oficiales de CIMA. Cita las fuentes utilizando el formato: [Ref X: Nombre del medicamento (Nº Registro)].
-
-Estructura tu respuesta de manera lógica:
-1. Comienza con un resumen conciso de la información solicitada
-2. Proporciona los detalles completos, organizados por puntos o párrafos según sea más apropiado
-3. Incluye cualquier advertencia o consideración especial relevante
-4. Concluye con recomendaciones generales si son pertinentes
-
-Utiliza un lenguaje preciso pero accesible, recordando que tu respuesta puede ser leída tanto por profesionales sanitarios como por pacientes.
-"""
-    
-    def __init__(self, openai_client: AsyncOpenAI):
-        self.openai_client = openai_client
-        self.reference_cache = {}
-        self.base_url = Config.CIMA_BASE_URL
-        self.conversation_history = []
-        self.session = None
-        self.max_tokens = 14000
-        self.use_langgraph = True
-        # Initialize tokenizer (robust: may be None in restricted networks)
-        self.tokenizer = get_tokenizer(Config.CHAT_MODEL)
-        # Active principle database - Spanish
-        self.active_principles = [
-            "ibuprofeno", "paracetamol", "omeprazol", "amoxicilina", "simvastatina", 
-            "enalapril", "metformina", "lorazepam", "diazepam", "fluoxetina", 
-            "atorvastatina", "tramadol", "naproxeno", "metamizol", "azitromicina",
-            "aspirina", "acido acetilsalicilico", "salbutamol", "fluticasona", 
-            "amlodipino", "valsartan", "losartan", "dexametasona", "betametasona",
-            "fentanilo", "morfina", "alendronato", "quetiapina", "risperidona",
-            "levotiroxina", "ranitidina", "levofloxacino", "ciprofloxacino",
-            "ondansetron", "prednisona", "hidrocortisona", "clonazepam",
-            "melatonina", "warfarina", "acenocumarol", "alprazolam", "atenolol",
-            "alopurinol", "amitriptilina", "diclofenaco", "loratadina", "cetirizina",
-            "vitamina d", "calcio", "hierro", "insulina", "metronidazol",
-            "minoxidil"
-        ]
-    
-    def clear_history(self):
-        """Clear the conversation history"""
-        self.conversation_history = []
-        logger.info("Conversation history cleared")
-    
-    def num_tokens(self, text: str) -> int:
-        """Calculate the number of tokens in a string"""
-        return count_tokens(self.tokenizer, text)
-
-    async def get_session(self):
-        """Get or create an aiohttp session with improved error handling"""
-        if self.session is None or self.session.closed:
-            # Using TCPConnector with proper settings for Streamlit environment
-            connector = aiohttp.TCPConnector(
-                ssl=True,  # Enable SSL verification
-                limit=5,    # Lower connection limit to prevent resource exhaustion
-                keepalive_timeout=30,  # Shorter keepalive period
-                force_close=False      # Let the server control connection closing
-            )
-            timeout = aiohttp.ClientTimeout(
-                total=60,    # Longer total timeout
-                connect=20,  # Longer connect timeout
-                sock_connect=20,
-                sock_read=30
-            )
-            self.session = aiohttp.ClientSession(
-                connector=connector, 
-                timeout=timeout,
-                raise_for_status=False  # Don't raise exceptions for HTTP errors
-            )
-        return self.session
-    
-    async def chat(self, query: str) -> Dict[str, str]:
-        """Process a chat query with CIMA context"""
-        # Reuse the FormulationAgent's context retrieval logic
-        formulation_agent = FormulationAgent(self.openai_client)
-        formulation_agent.session = await self.get_session()  # Share session for efficiency
-        formulation_agent.use_langgraph = self.use_langgraph  # Use same search method
-        
-        try:
-            # Get intent from enhanced search
-            search_implementation = MedicationSearchGraph()
-            results, quality, query_intent = await search_implementation.execute_search(query)
-            
-            # Get context using the FormulationAgent's enhanced methods
-            context = await formulation_agent.get_relevant_context(query, n_results=3)
-            
-            # Create chat history context
-            history_text = ""
-            if self.conversation_history:
-                history_text = "HISTORIAL DE CONVERSACIÓN:\n"
-                for msg in self.conversation_history[-3:]:  # Only use last 3 messages for context
-                    role = "Usuario" if msg["role"] == "user" else "Asistente"
-                    history_text += f"{role}: {msg['content']}\n\n"
-            
-            # Determine if we should use the focused system prompt
-            if query_intent and query_intent.intent_type != "general":
-                # Get formulation info to extract active principle
-                formulation_info = formulation_agent.detect_formulation_type(query)
-                active_principle = formulation_info.get("active_principle", "el medicamento")
-                
-                # Use focused system prompt
-                system_prompt = self.focused_system_prompt.replace(
-                    "{information_type}", query_intent.description
-                ).replace(
-                    "{active_principle}", active_principle
-                )
-            else:
-                # Use general system prompt
-                system_prompt = self.system_prompt
-            
-            # Create prompt
-            prompt = f"""
-Analiza el siguiente contexto y el historial de conversación para responder a la consulta del usuario:
-
-CONTEXTO DE CIMA:
-{context}
-
-{history_text}
-
-CONSULTA ACTUAL:
-{query}
-"""
-
-            # Add intent information if available
-            if query_intent and query_intent.intent_type != "general":
-                prompt += f"""
-TIPO DE INFORMACIÓN SOLICITADA: {query_intent.description}
-
-Dado que el usuario está preguntando específicamente sobre {query_intent.description} de un medicamento,
-centra tu respuesta en proporcionar información detallada y completa sobre este aspecto.
-"""
-
-            prompt += """
-Proporciona información detallada y precisa basada en los datos de CIMA. Cita las fuentes utilizando el formato [Ref X: Nombre del medicamento (Nº Registro)].
-Si desconoces la respuesta o no hay información suficiente en el contexto, indícalo claramente.
-"""
-            
-            # Generate response
-            chat_completion = await self.openai_client.chat.completions.create(
-                model=Config.CHAT_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7
-            )
-            
-            answer = chat_completion.choices[0].message.content
-            
-            # Create direct links for references in response
-            pattern = r'\[Ref (\d+): ([^()]+) \(Nº Registro: (\d+)\)\]'
-            
-            def replace_with_link(match):
-                ref_num = match.group(1)
-                med_name = match.group(2)
-                reg_num = match.group(3)
-                return f'[Ref {ref_num}: {med_name} (Nº Registro: {reg_num})](https://cima.aemps.es/cima/dochtml/ft/{reg_num}/FichaTecnica.html)'
-            
-            answer_with_links = re.sub(pattern, replace_with_link, answer)
-            
-            # Update conversation history
-            self.conversation_history.append({"role": "user", "content": query})
-            self.conversation_history.append({"role": "assistant", "content": answer_with_links})
-            
-            # Ensure we don't keep too much history
-            if len(self.conversation_history) > 10:
-                self.conversation_history = self.conversation_history[-10:]
-            
-            return {
-                "answer": answer_with_links,
-                "context": context
-            }
-        except Exception as e:
-            logger.error(f"Error in chat: {str(e)}")
-            raise
-        finally:
-            # Don't close the shared session here, let the main application manage it
-            pass
-    
-    async def close(self):
-        """Close the aiohttp session to free resources with proper error handling"""
         if self.session and not self.session.closed:
             try:
                 await self.session.close()

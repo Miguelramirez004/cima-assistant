@@ -10,12 +10,12 @@ import re
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional, Set, Tuple, Callable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import aiohttp
 from dataclasses import dataclass, field
 
-from config import Config
-from principle_resolver import ActivePrincipleResolver, ResolvedPrinciple
+from .config import Config
+from .principle_resolver import ActivePrincipleResolver, ResolvedPrinciple
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -75,9 +75,8 @@ class MedicationResult(BaseModel):
     comerc: Optional[bool] = None
     relevance_score: Optional[int] = 0
     
-    class Config:
-        # Allow extra fields that might be in the CIMA API response
-        extra = "allow"
+    # Allow extra fields that might be in the CIMA API response
+    model_config = ConfigDict(extra="allow")
 
 @dataclass
 class MedicationSearchGraph:

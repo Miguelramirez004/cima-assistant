@@ -23,8 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import aiohttp  # noqa: E402
 
-from principle_resolver import ActivePrincipleResolver  # noqa: E402
-from search_graph import MedicationSearchGraph  # noqa: E402
+from cima_core.principle_resolver import ActivePrincipleResolver  # noqa: E402
+from cima_core.search_graph import MedicationSearchGraph  # noqa: E402
 
 TERMS = [
     "ibuprofeno",

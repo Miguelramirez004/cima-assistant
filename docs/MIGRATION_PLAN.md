@@ -10,8 +10,20 @@ auth, persistence and caching.
 - **Multi‑organization** — users belong to one or more organizations
   (pharmacies, hospitals…); all data, quotas and administration are scoped to
   the organization.
-- *Pending:* Vercel plan (Hobby vs Pro). Pro is needed for commercial use and
-  longer function durations — assume Pro.
+- **Vercel Hobby for now.** Fine for building and piloting; note that
+  Hobby's terms exclude commercial use, so **move to Pro before charging
+  organizations**. Hobby limits that shape the design: functions up to 300 s
+  with Fluid Compute (configured in `vercel.json`), a single function region
+  (`fra1`), no password-protected previews.
+
+**Progress**
+
+- [x] Phase 1 — repo restructure, Python 3.12 + current deps, Next.js +
+  FastAPI skeleton, `vercel.json` (`supabase init` moves to Phase 3)
+- [x] Phase 2 — `cima_core` package decoupled from Streamlit (stateless
+  agents, injectable cache, typed results, tests)
+- [ ] Phase 3 — Supabase schema + RLS
+- [ ] Phase 4 — API endpoints · [ ] Phase 5 — frontend · [ ] Phase 6–8
 
 ---
 
@@ -78,7 +90,7 @@ Browser ──► Vercel
 
 | Decision | Recommendation | Why |
 |---|---|---|
-| Frontend | **Next.js 15 App Router + TypeScript + Tailwind + shadcn/ui** | First‑class on Vercel; easy streaming UI; the current "Claude‑style" chat look maps cleanly to Tailwind |
+| Frontend | **Next.js 16 App Router + TypeScript + Tailwind + shadcn/ui** | First‑class on Vercel; easy streaming UI; the current "Claude‑style" chat look maps cleanly to Tailwind |
 | Backend | **Keep Python, wrap it in FastAPI on Vercel's Python runtime** in the same repo/project | Reuses ~4,000 lines of tested CIMA/RAG logic instead of rewriting. A TypeScript port is optional later (Phase 9) |
 | Auth | **Supabase Auth, login required**, invite‑only sign‑up (email magic link + Google/Microsoft OAuth; SAML SSO later for large orgs) | Clinical B2B tool: no public sign‑up, no anonymous OpenAI spend |
 | Tenancy | **Shared database, `organization_id` on every tenant table, enforced by RLS** | Simplest model that scales to many orgs; one schema, one deployment |
@@ -389,7 +401,7 @@ Route map (replaces the 4 Streamlit tabs + sidebar):
 | Layout sidebar | Sidebar | **Organization switcher** (active org stored in `profiles.last_organization_id` and sent as `X-Org-Id`), recent queries, settings toggles |
 
 Implementation notes:
-- `middleware.ts` with `@supabase/ssr`: refresh sessions and redirect **every**
+- `proxy.ts` (Next.js 16 renamed `middleware.ts` to `proxy.ts`) with `@supabase/ssr`: refresh sessions and redirect **every**
   route except `/login` and `/invite/*` to `/login` when unauthenticated.
 - `lib/api.ts` wraps calls to `/api/*`, attaching the access token.
 - Port the design tokens from the injected CSS in `app.py` (teal `#0D9488`,
@@ -483,7 +495,7 @@ Vercel env vars (Production / Preview / Development):
 
 ## 5. Remaining open questions
 
-1. Vercel plan — Pro assumed (commercial use, longer `maxDuration`).
+1. Vercel plan — Hobby for now; upgrade to Pro before commercial use.
 2. Who creates organizations: only platform admins (assumed), or self‑serve
    "create your organization" sign‑up?
 3. Should members of the same organization see each other's formulations and

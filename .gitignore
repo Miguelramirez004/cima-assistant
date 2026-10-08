@@ -10,8 +10,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
 parts/
 sdist/
 var/
@@ -47,3 +45,15 @@ logs/
 # Local test data
 test_data/
 *.bak
+# Node / Next.js
+/node_modules
+/.next/
+/out/
+*.tsbuildinfo
+next-env.d.ts
+.env*.local
+.vercel
+
+# Supabase local
+supabase/.branches
+supabase/.temp
