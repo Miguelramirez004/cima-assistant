@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { Markdown } from "@/components/Markdown";
+import { Aparecer, EscanerDocumento, ProcesoEnCurso, Spinner, usePlaceholderRotativo } from "@/components/motion";
 import { References } from "@/components/References";
 import { useActiveOrg } from "@/components/SessionProvider";
 import { Alert, Button, inputClass } from "@/components/ui";
@@ -15,6 +16,13 @@ const EXAMPLES = [
   "¿Qué medicamentos están indicados para la hipertensión?",
   "¿Puedo tomar omeprazol durante el embarazo?",
   "Interacciones del clopidogrel con omeprazol",
+];
+
+const PLACEHOLDERS = [
+  "Escriba su consulta sobre medicamentos…",
+  "¿Dosis de amoxicilina en niños?",
+  "¿Interacciones de la warfarina?",
+  "¿Puedo partir los comprimidos de enalapril?",
 ];
 
 interface Pending {
@@ -37,6 +45,7 @@ export function ChatWorkspace({ conversations: initialConversations, conversatio
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  const placeholder = usePlaceholderRotativo(PLACEHOLDERS);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
@@ -117,14 +126,14 @@ export function ChatWorkspace({ conversations: initialConversations, conversatio
             <div className="py-10 text-center">
               <p className="font-medium">Pregunte sobre cualquier medicamento registrado en CIMA</p>
               <p className="mt-1 text-sm text-muted">Las respuestas se basan solo en las fichas técnicas oficiales y citan sus fuentes.</p>
-              <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <Aparecer retraso={0.1} className="mx-auto mt-6 grid max-w-2xl gap-3 sm:grid-cols-2">
                 {EXAMPLES.map((example) => (
                   <button key={example} onClick={() => send(example)}
-                          className="rounded-full border border-line px-3 py-1.5 text-xs text-slate-600 hover:border-accent hover:text-accent-strong">
+                          className="cima-elevable h-full w-full rounded-xl border border-line bg-white px-4 py-3 text-left text-sm text-slate-700">
                     {example}
                   </button>
                 ))}
-              </div>
+              </Aparecer>
             </div>
           )}
 
@@ -132,13 +141,13 @@ export function ChatWorkspace({ conversations: initialConversations, conversatio
             ? <UserBubble key={message.id} text={message.content} />
             : <AssistantMessage key={message.id} text={message.content} reasoning={message.reasoning} references={message.references} />)}
 
-          {pending && (
-            <div>
-              <ol className="mb-3 space-y-1 border-l-2 border-accent/40 pl-3 text-xs text-muted" aria-live="polite">
-                {pending.trace.map((step, i) => <li key={i}>{step}</li>)}
-                {!pending.text && <li className="animate-pulse">Consultando CIMA (AEMPS)…</li>}
-              </ol>
-              {pending.text && <Markdown>{pending.text}</Markdown>}
+          {pending && !pending.text && (
+            <ProcesoEnCurso ilustracion={<EscanerDocumento />} barra={false}
+                            pasos={[...pending.trace, "Consultando CIMA (AEMPS)…"]} actual={pending.trace.length} />
+          )}
+          {pending?.text && (
+            <div className="cima-funde cima-escribiendo">
+              <Markdown>{pending.text}</Markdown>
             </div>
           )}
           {error && <Alert>{error}</Alert>}
@@ -152,8 +161,10 @@ export function ChatWorkspace({ conversations: initialConversations, conversatio
             <textarea id="question" rows={2} maxLength={2000} value={input} disabled={Boolean(pending)}
                       onChange={(e) => setInput(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
-                      placeholder="Escriba su consulta sobre medicamentos…" className={`${inputClass} resize-none`} />
-            <Button type="submit" disabled={Boolean(pending) || input.trim().length < 3}>Enviar</Button>
+                      placeholder={placeholder} className={`${inputClass} resize-none`} />
+            <Button type="submit" disabled={Boolean(pending) || input.trim().length < 3}>
+              {pending ? <><Spinner tono="claro" />Consultando…</> : "Enviar"}
+            </Button>
           </div>
           <p className="mt-1.5 text-xs text-muted">Información de la AEMPS con fines informativos; no sustituye el criterio profesional.</p>
         </form>
@@ -164,7 +175,7 @@ export function ChatWorkspace({ conversations: initialConversations, conversatio
 
 function UserBubble({ text }: { text: string }) {
   return (
-    <div className="flex justify-end">
+    <div className="cima-entra flex justify-end">
       <p className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-surface px-4 py-2.5 text-sm ring-1 ring-line">{text}</p>
     </div>
   );
@@ -172,7 +183,7 @@ function UserBubble({ text }: { text: string }) {
 
 function AssistantMessage({ text, reasoning, references }: { text: string; reasoning: string | null; references: Reference[] }) {
   return (
-    <div>
+    <div className="cima-funde">
       <Markdown>{text}</Markdown>
       <References references={references} />
       {reasoning && (

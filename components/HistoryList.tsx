@@ -49,8 +49,8 @@ export function HistoryList({ kind, items: initialItems }: { kind: Item["kind"];
     <div className="space-y-3">
       {error && <Alert>{error}</Alert>}
       <ul className="divide-y divide-line rounded-xl border border-line bg-white">
-        {items.map((data) => (
-          <li key={data.id} className="px-5 py-4">
+        {items.map((data, i) => (
+          <li key={data.id} className="cima-entra px-5 py-4" style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}>
             {kind === "conversations"
               ? <ConversationRow conversation={data as Conversation} onDelete={() => remove(data.id)} />
               : <DocumentRow kind={kind} data={data as Formulation | Prospecto} onDelete={() => remove(data.id)} />}

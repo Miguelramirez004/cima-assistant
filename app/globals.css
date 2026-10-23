@@ -55,3 +55,49 @@ body {
 .prose-cima th, .prose-cima td { border: 1px solid var(--line); padding: 0.4em 0.7em; text-align: left; }
 .prose-cima th { background: var(--surface); font-weight: 600; }
 .prose-cima blockquote { border-left: 3px solid var(--line); padding-left: 0.9em; color: var(--muted); }
+
+/* ── Animaciones (components/motion.tsx) ──────────────────────────────── */
+@keyframes cima-entra { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes cima-funde { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cima-gira { to { transform: rotate(360deg); } }
+@keyframes cima-traza { to { stroke-dashoffset: 0; } }
+@keyframes cima-brillo { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes cima-escanea { from { top: 12%; } to { top: 84%; } }
+@keyframes cima-linea { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+@keyframes cima-latido { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+@keyframes cima-cursor { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes cima-llena { 0% { transform: translateY(78%); } 100% { transform: translateY(18%); } }
+@keyframes cima-burbuja { 0% { transform: translateY(0); opacity: 0; } 20% { opacity: 1; } 100% { transform: translateY(-46px); opacity: 0; } }
+@keyframes cima-ola { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@keyframes cima-despliega { 0%, 10% { transform: scaleX(0.4); opacity: 0.6; } 35%, 85% { transform: scaleX(1); opacity: 1; } 100% { transform: scaleX(0.4); opacity: 0.6; } }
+@keyframes cima-aviso { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
+
+.cima-entra { animation: cima-entra 0.45s cubic-bezier(0.2, 0.6, 0.2, 1) both; }
+.cima-funde { animation: cima-funde 0.35s ease both; }
+.cima-gira { animation: cima-gira 0.8s linear infinite; }
+.cima-traza { stroke-dasharray: 1; stroke-dashoffset: 1; animation: cima-traza 0.5s ease-out forwards; }
+.cima-dibuja { stroke-dasharray: 1; stroke-dashoffset: 1; animation: cima-traza 2.6s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+.cima-esqueleto { background: linear-gradient(90deg, var(--line) 0%, color-mix(in srgb, var(--line) 35%, #ffffff) 50%, var(--line) 100%); background-size: 200% 100%; animation: cima-brillo 1.4s linear infinite; }
+.cima-escaner { animation: cima-escanea 1.2s ease-in-out infinite alternate; }
+.cima-linea { animation: cima-linea 2.4s ease-in-out infinite; }
+.cima-latido { animation: cima-latido 2.6s ease-out infinite; }
+.cima-cursor { animation: cima-cursor 1s steps(1) infinite; }
+.cima-llena { animation: cima-llena 3.2s cubic-bezier(0.4, 0, 0.2, 1) infinite alternate; }
+.cima-burbuja { animation: cima-burbuja 2.2s ease-in infinite; }
+.cima-ola { animation: cima-ola 2.4s linear infinite; }
+.cima-despliega { transform-origin: left center; animation: cima-despliega 3.6s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+.cima-aviso { animation: cima-aviso 0.3s cubic-bezier(0.2, 0.6, 0.2, 1) both; }
+.cima-elevable { transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease; }
+.cima-elevable:hover, .cima-elevable:focus-visible { transform: translateY(-2px); box-shadow: 0 10px 24px -16px rgba(15, 60, 50, 0.35); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.cima-barra { transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1); }
+/* Cursor al final del último texto mientras la respuesta llega en streaming */
+.cima-escribiendo .prose-cima > :last-child:not(ul, ol)::after,
+.cima-escribiendo .prose-cima > :is(ul, ol):last-child > li:last-child::after {
+  content: ""; display: inline-block; width: 2px; height: 1.1em; margin-left: 2px; vertical-align: -0.15em;
+  background: var(--accent); animation: cima-cursor 1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class*="cima-"], .cima-escribiendo .prose-cima *::after { animation: none !important; transition: none !important; }
+  .cima-traza, .cima-dibuja { stroke-dashoffset: 0; }
+}
