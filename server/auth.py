@@ -37,7 +37,10 @@ class TokenVerifier:
         self.rest = rest
         self.issuer = f"{rest.url}/auth/v1"
         self._jwks: Dict[str, Dict[str, Any]] = {}
-        self._jwks_fetched_at = 0.0
+        # None = aún sin descargar. No se usa 0.0: time.monotonic() cuenta desde
+        # el arranque de la máquina y en una función recién iniciada vale pocos
+        # segundos, lo que haría creer que el JWKS se descargó hace un momento.
+        self._jwks_fetched_at: Optional[float] = None
 
     async def verify(self, token: str) -> AuthUser:
         try:
@@ -68,17 +71,18 @@ class TokenVerifier:
         return AuthUser(id=claims["sub"], email=claims.get("email"))
 
     async def _get_jwk(self, kid: str) -> Optional[Dict[str, Any]]:
-        age = time.monotonic() - self._jwks_fetched_at
-        # Refrescar al caducar, o ante un kid desconocido (rotación de claves)
-        # como mucho cada 30 s, para que tokens con kids inventados no
-        # provoquen una petición al JWKS cada vez
-        if age > JWKS_TTL_SECONDS or (kid not in self._jwks and age > 30):
+        now = time.monotonic()
+        age = None if self._jwks_fetched_at is None else now - self._jwks_fetched_at
+        # Descargar la primera vez y al caducar, o ante un kid desconocido
+        # (rotación de claves) como mucho cada 30 s, para que tokens con kids
+        # inventados no provoquen una petición al JWKS cada vez
+        if age is None or age > JWKS_TTL_SECONDS or (kid not in self._jwks and age > 30):
             try:
                 data = await self.rest.get_jwks()
             except SupabaseError as e:
                 raise AuthError("No se pudieron obtener las claves de firma") from e
             self._jwks = {k["kid"]: k for k in data.get("keys", []) if k.get("kid")}
-            self._jwks_fetched_at = time.monotonic()
+            self._jwks_fetched_at = now
         return self._jwks.get(kid)
 
     async def _verify_with_auth_server(self, token: str) -> AuthUser:
