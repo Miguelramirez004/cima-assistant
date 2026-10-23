@@ -69,7 +69,7 @@ body {
 @keyframes cima-llena { 0% { transform: translateY(78%); } 100% { transform: translateY(18%); } }
 @keyframes cima-burbuja { 0% { transform: translateY(0); opacity: 0; } 20% { opacity: 1; } 100% { transform: translateY(-46px); opacity: 0; } }
 @keyframes cima-ola { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-@keyframes cima-despliega { 0%, 10% { transform: scaleX(0); } 35%, 85% { transform: scaleX(1); } 100% { transform: scaleX(0); } }
+@keyframes cima-despliega { 0%, 10% { transform: scaleX(0.4); opacity: 0.6; } 35%, 85% { transform: scaleX(1); opacity: 1; } 100% { transform: scaleX(0.4); opacity: 0.6; } }
 @keyframes cima-aviso { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
 
 .cima-entra { animation: cima-entra 0.45s cubic-bezier(0.2, 0.6, 0.2, 1) both; }
@@ -90,8 +90,14 @@ body {
 .cima-elevable { transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease; }
 .cima-elevable:hover, .cima-elevable:focus-visible { transform: translateY(-2px); box-shadow: 0 10px 24px -16px rgba(15, 60, 50, 0.35); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .cima-barra { transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1); }
+/* Cursor al final del último texto mientras la respuesta llega en streaming */
+.cima-escribiendo .prose-cima > :last-child:not(ul, ol)::after,
+.cima-escribiendo .prose-cima > :is(ul, ol):last-child > li:last-child::after {
+  content: ""; display: inline-block; width: 2px; height: 1.1em; margin-left: 2px; vertical-align: -0.15em;
+  background: var(--accent); animation: cima-cursor 1s steps(1) infinite;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  [class*="cima-"] { animation: none !important; transition: none !important; }
+  [class*="cima-"], .cima-escribiendo .prose-cima *::after { animation: none !important; transition: none !important; }
   .cima-traza, .cima-dibuja { stroke-dashoffset: 0; }
 }

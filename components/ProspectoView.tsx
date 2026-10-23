@@ -4,9 +4,13 @@ import { useState } from "react";
 
 import { useActiveOrg } from "@/components/SessionProvider";
 import { downloadText, slugify } from "@/components/download";
-import { Alert, Button, Card, Spinner, inputClass } from "@/components/ui";
+import { ProcesoEnCurso, ProspectoDesplegable, Spinner, useSecuencia } from "@/components/motion";
+import { Alert, Button, Card, inputClass } from "@/components/ui";
 import { generateProspecto } from "@/lib/client-actions";
 import type { ProspectoResult } from "@/lib/types";
+
+// Fases orientativas: la API responde de una vez; la última queda activa hasta el resultado.
+const PASOS = ["Buscando el medicamento en CIMA", "Obteniendo el prospecto registrado", "Preparando el texto"];
 
 const EXAMPLES = [
   "Prospecto de ibuprofeno 600 mg comprimidos",
@@ -20,6 +24,8 @@ export function ProspectoView({ initialQuery = "" }: { initialQuery?: string }) 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ query: string; data: ProspectoResult } | null>(null);
+  const [intento, setIntento] = useState(0);
+  const paso = useSecuencia(PASOS.length, 2500, intento);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -27,6 +33,7 @@ export function ProspectoView({ initialQuery = "" }: { initialQuery?: string }) 
     if (text.length < 3) return;
     setLoading(true);
     setError(null);
+    setIntento((n) => n + 1);
     try {
       setResult({ query: text, data: await generateProspecto(org.id, text) });
     } catch (e) {
@@ -56,17 +63,17 @@ export function ProspectoView({ initialQuery = "" }: { initialQuery?: string }) 
               ))}
             </div>
             <Button type="submit" disabled={loading || query.trim().length < 3}>
-              {loading ? "Generando…" : "Generar prospecto"}
+              {loading ? <><Spinner tono="claro" />Generando…</> : "Generar prospecto"}
             </Button>
           </div>
         </form>
       </Card>
 
-      {loading && <Spinner label="Obteniendo el prospecto registrado en CIMA…" />}
+      {loading && <ProcesoEnCurso ilustracion={<ProspectoDesplegable />} pasos={PASOS} actual={paso} />}
       {error && <Alert>{error}</Alert>}
 
       {result && (
-        <Card>
+        <Card className="cima-entra">
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-muted">Prospecto</p>

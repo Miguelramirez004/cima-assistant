@@ -7,9 +7,14 @@ import { Markdown } from "@/components/Markdown";
 import { References } from "@/components/References";
 import { useActiveOrg } from "@/components/SessionProvider";
 import { downloadText, slugify } from "@/components/download";
-import { Alert, Button, Card, Spinner, inputClass } from "@/components/ui";
+import { ProcesoEnCurso, Spinner, VasoFormulacion, useSecuencia } from "@/components/motion";
+import { Alert, Button, Card, inputClass } from "@/components/ui";
 import { generateFormulacion } from "@/lib/client-actions";
 import type { FormulacionResult } from "@/lib/types";
+
+// Fases orientativas: la API responde de una vez, así que avanzan con el tiempo y la última
+// queda activa hasta que llega el resultado.
+const PASOS = ["Buscando el principio activo en CIMA", "Leyendo las fichas técnicas relacionadas", "Redactando la formulación"];
 
 const EXAMPLES = [
   "Suspensión oral de omeprazol 2 mg/ml para uso pediátrico",
@@ -25,6 +30,8 @@ export function FormulacionView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ query: string; data: FormulacionResult } | null>(null);
+  const [intento, setIntento] = useState(0);
+  const paso = useSecuencia(PASOS.length, 6000, intento);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -32,6 +39,7 @@ export function FormulacionView() {
     if (text.length < 3) return;
     setLoading(true);
     setError(null);
+    setIntento((n) => n + 1);
     try {
       setResult({ query: text, data: await generateFormulacion(org.id, text, advanced) });
     } catch (e) {
@@ -77,13 +85,16 @@ export function FormulacionView() {
               Búsqueda avanzada en CIMA
             </label>
             <Button type="submit" disabled={loading || query.trim().length < 3}>
-              {loading ? "Generando…" : "Generar formulación"}
+              {loading ? <><Spinner tono="claro" />Generando…</> : "Generar formulación"}
             </Button>
           </div>
         </form>
       </Card>
 
-      {loading && <Spinner label="Consultando CIMA y redactando la formulación (puede tardar hasta un minuto)…" />}
+      {loading && (
+        <ProcesoEnCurso ilustracion={<VasoFormulacion />} pasos={PASOS} actual={paso}
+                        nota="Puede tardar hasta un minuto." />
+      )}
       {error && <Alert>{error}</Alert>}
 
       {result?.data.redirect === "prospecto" && (
@@ -96,7 +107,7 @@ export function FormulacionView() {
       )}
 
       {result && !result.data.redirect && (
-        <Card>
+        <Card className="cima-entra">
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-muted">Formulación</p>

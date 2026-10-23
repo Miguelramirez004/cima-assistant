@@ -53,13 +53,13 @@ export function EscanerDocumento({ className = "" }: { className?: string }) {
 }
 
 /** Pasos con indicador de carga, check dibujado y barra de progreso. */
-export function PasosProgreso({ pasos, actual }: { pasos: string[]; actual: number }) {
+export function PasosProgreso({ pasos, actual, barra = true }: { pasos: string[]; actual: number; barra?: boolean }) {
   const progreso = Math.min(100, Math.round(((actual + 0.6) / pasos.length) * 100));
   return (
     <div className="flex flex-col gap-4">
       <ol role="status" aria-live="polite" className="flex flex-col gap-3">
         {pasos.map((paso, i) => (
-          <li key={paso} className={`flex items-center gap-3 text-sm ${i > actual ? "text-muted" : "text-foreground"} ${i === actual ? "font-semibold" : ""}`}>
+          <li key={`${i}-${paso}`} className={`flex items-center gap-3 text-sm ${i > actual ? "text-muted" : "text-foreground"} ${i === actual ? "font-semibold" : ""}`}>
             {i < actual && <Check className="size-5" />}
             {i === actual && <Spinner className="size-5" />}
             {i > actual && <span className="size-5 rounded-full border-2 border-dashed border-line" />}
@@ -67,8 +67,25 @@ export function PasosProgreso({ pasos, actual }: { pasos: string[]; actual: numb
           </li>
         ))}
       </ol>
-      <div aria-hidden="true" className="h-1 overflow-hidden rounded-full bg-surface">
-        <div className="cima-barra h-full rounded-full bg-accent" style={{ width: `${progreso}%` }} />
+      {barra && (
+        <div aria-hidden="true" className="h-1 overflow-hidden rounded-full bg-surface">
+          <div className="cima-barra h-full rounded-full bg-accent" style={{ width: `${progreso}%` }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Tarjeta de trabajo en curso: ilustración animada junto a los pasos. */
+export function ProcesoEnCurso({ ilustracion, pasos, actual, barra = true, nota }: {
+  ilustracion: ReactNode; pasos: string[]; actual: number; barra?: boolean; nota?: string;
+}) {
+  return (
+    <div className="cima-entra flex flex-wrap items-center gap-6 rounded-xl border border-line bg-white p-5">
+      {ilustracion}
+      <div className="min-w-60 flex-1">
+        <PasosProgreso pasos={pasos} actual={actual} barra={barra} />
+        {nota && <p className="mt-3 text-xs text-muted">{nota}</p>}
       </div>
     </div>
   );
@@ -146,7 +163,7 @@ export function ProspectoDesplegable({ className = "" }: { className?: string })
   return (
     <div aria-hidden="true" className={`flex h-32 w-40 shrink-0 items-stretch ${className}`}>
       {[0, 1, 2].map((i) => (
-        <div key={i} className="cima-despliega flex flex-1 flex-col gap-1.5 border border-line bg-white p-2 first:rounded-l-lg last:rounded-r-lg"
+        <div key={i} className="cima-despliega flex flex-1 flex-col gap-1.5 border border-line bg-surface p-2 first:rounded-l-lg last:rounded-r-lg"
              style={{ animationDelay: `${i * 0.25}s` }}>
           {i === 0 && <span className="h-1.5 w-4/5 rounded-full bg-accent" />}
           {[100, 80, 100, 60, 90].map((w, j) => <span key={j} className="h-1 rounded-full bg-line" style={{ width: `${w}%` }} />)}
