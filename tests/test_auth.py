@@ -94,3 +94,12 @@ async def test_hs256_tokens_are_checked_with_auth_server(rest):
 async def test_garbage_token(rest):
     with pytest.raises(AuthError):
         await TokenVerifier(rest).verify("not-a-jwt")
+
+
+async def test_first_request_on_freshly_booted_machine_fetches_jwks(rest, monkeypatch):
+    # En una función recién arrancada time.monotonic() vale pocos segundos; el
+    # primer token debe descargar el JWKS igualmente.
+    monkeypatch.setattr("server.auth.time.monotonic", lambda: 5.0)
+    user = await TokenVerifier(rest).verify(token())
+    assert user.id == "user-1"
+    assert rest.jwks_calls == 1
