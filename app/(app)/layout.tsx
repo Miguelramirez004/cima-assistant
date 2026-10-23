@@ -15,7 +15,8 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
       <div className="flex min-h-screen flex-col md:flex-row">
         <Sidebar />
         <main className="min-w-0 flex-1 px-4 py-6 md:px-10 md:py-8">
-          <div className="mx-auto w-full max-w-4xl">{children}</div>
+          {/* Las páginas de lectura van a 4xl; Consultas (lista + chat) pide más ancho con data-ancho */}
+          <div className="mx-auto w-full max-w-4xl has-[[data-ancho=amplio]]:max-w-7xl">{children}</div>
         </main>
       </div>
     </SessionProvider>
